@@ -10,7 +10,7 @@ orbits in real-time.
 
 import sys
 import math
-from typing import Optional
+from typing import Optional, Dict
 
 import pygame
 
@@ -219,6 +219,31 @@ class Visualizer:
             sim_dt = dt * self.time_scale
             self.simulation.step(sim_dt)
     
+    def _get_satellite_completion_percentages(self) -> Dict[str, float]:
+        """
+        Get completion percentages for all satellites.
+        
+        Returns
+        -------
+        Dict[str, float]
+            Dictionary mapping satellite IDs to completion percentages (0-100)
+        """
+        if self.simulation is None:
+            return {}
+        
+        completion_percentages = {}
+        stats = self.simulation.state.agent_statistics
+        
+        for satellite in self.simulation.satellites:
+            agent_id = self.simulation.satellite_id_to_agent_id.get(satellite.satellite_id)
+            if agent_id is not None:
+                completion = stats.completion_percentage.get(agent_id, 0.0)
+            else:
+                completion = 0.0
+            completion_percentages[satellite.satellite_id] = completion
+        
+        return completion_percentages
+    
     def _render(self) -> None:
         """Render the current frame."""
         # Clear screen
@@ -243,7 +268,7 @@ class Visualizer:
         # Draw Earth grid
         self.renderer.draw_earth_grid(self.camera)
         
-        # Draw orbits
+        # Draw orbits (unique orbits only, in light gray)
         self.renderer.draw_orbits(self.camera, self.simulation.orbits)
         
         # Draw communication links (before satellites so they appear underneath)
@@ -262,8 +287,15 @@ class Visualizer:
             earth_rotation
         )
         
-        # Draw satellites
-        self.renderer.draw_satellites(self.camera, self.simulation.satellites)
+        # Get satellite completion percentages for coloring
+        completion_percentages = self._get_satellite_completion_percentages()
+        
+        # Draw satellites (colored by packet completion: red -> yellow -> green)
+        self.renderer.draw_satellites(
+            self.camera,
+            self.simulation.satellites,
+            completion_percentages
+        )
         
         # Draw base stations
         self.renderer.draw_base_stations(
@@ -347,6 +379,7 @@ def run_visualizer(
     inclination_deg: float = 53,
     num_satellites: int = 5,  # For random constellations
     random_seed: Optional[int] = 42,
+    num_packets: int = 100,  # Number of packets in the software update
     time_scale: float = 60.0,
     paused: bool = False,
     width: int = 1000,
@@ -371,6 +404,8 @@ def run_visualizer(
         Total satellites (random constellations)
     random_seed : Optional[int]
         Random seed for reproducibility
+    num_packets : int
+        Number of packets in the software update
     time_scale : float
         Initial time scale
     paused : bool
@@ -394,13 +429,16 @@ def run_visualizer(
         num_satellites=num_satellites,
         altitude=altitude,
         inclination=math.radians(inclination_deg),
-        random_seed=random_seed
+        random_seed=random_seed,
+        num_packets=num_packets
     )
     
     print(f"Created {constellation_type} constellation:")
     print(f"  Satellites: {visualizer.simulation.num_satellites}")
     print(f"  Orbits: {visualizer.simulation.num_orbits}")
     print(f"  Base Stations: {len(visualizer.simulation.base_stations)}")
+    print(f"  Packets: {num_packets}")
+    print(f"\nSatellite colors: Red (0%) -> Yellow (50%) -> Green (100%)")
     
     visualizer.run()
 
@@ -416,6 +454,8 @@ if __name__ == "__main__":
     print("  SPACE : Pause/Resume")
     print("  R : Regenerate constellation")
     print("  ESC : Quit")
+    print("\nSatellite colors indicate packet completion:")
+    print("  Red = 0%, Yellow = 50%, Green = 100%")
     print()
     
     run_visualizer(
@@ -424,5 +464,6 @@ if __name__ == "__main__":
         sats_per_plane=4,
         altitude=550,
         inclination_deg=53,
-        random_seed=42
+        random_seed=42,
+        num_packets=100
     )

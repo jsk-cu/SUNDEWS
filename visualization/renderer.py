@@ -9,7 +9,7 @@ and other visualization elements using Pygame.
 
 import math
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Set
 import pygame
 
 from .camera import Camera
@@ -23,10 +23,12 @@ class Colors:
     SPHERE_HIGHLIGHT = (80, 140, 200)
     GRID_LINE = (20, 50, 100)
     GRID_LINE_BACK = (15, 35, 70)
-    ORBIT_FRONT = (255, 220, 50)
-    ORBIT_BACK = (180, 150, 30)
     TEXT = (220, 220, 220)
     TEXT_DIM = (200, 200, 200)
+    
+    # Orbit colors - now light gray for all orbits
+    ORBIT_FRONT = (180, 180, 180)
+    ORBIT_BACK = (100, 100, 100)
     
     # Communication link colors
     LINK_COLOR = (50, 255, 100)        # Bright green for visible links
@@ -38,30 +40,86 @@ class Colors:
     BASE_STATION_LINK_COLOR = (50, 255, 100)  # Green for base station links
     BASE_STATION_LINK_COLOR_BACK = (30, 150, 60)
     
-    # Satellite colors
-    SATELLITE_COLORS = [
-        (255, 255, 100),   # Yellow
-        (100, 255, 150),   # Green
-        (255, 130, 130),   # Red
-        (150, 180, 255),   # Blue
-        (255, 180, 255),   # Pink
-    ]
+    # Satellite packet status colors
+    SATELLITE_NO_PACKETS = (255, 50, 50)      # Red - 0% completion
+    SATELLITE_HALF_PACKETS = (255, 255, 50)   # Yellow - 50% completion
+    SATELLITE_ALL_PACKETS = (50, 255, 50)     # Green - 100% completion
+
+
+def interpolate_color(
+    color1: Tuple[int, int, int],
+    color2: Tuple[int, int, int],
+    t: float
+) -> Tuple[int, int, int]:
+    """
+    Linearly interpolate between two colors.
     
-    # Orbit colors (front, back) pairs
-    ORBIT_COLORS = [
-        ((255, 220, 50), (180, 150, 30)),    # Yellow
-        ((50, 255, 150), (30, 180, 100)),    # Green
-        ((255, 100, 100), (180, 70, 70)),    # Red
-        ((150, 150, 255), (100, 100, 180)),  # Blue
-        ((255, 150, 255), (180, 100, 180)),  # Pink
-    ]
+    Parameters
+    ----------
+    color1 : Tuple[int, int, int]
+        Start color (RGB)
+    color2 : Tuple[int, int, int]
+        End color (RGB)
+    t : float
+        Interpolation factor (0.0 = color1, 1.0 = color2)
+    
+    Returns
+    -------
+    Tuple[int, int, int]
+        Interpolated color
+    """
+    t = max(0.0, min(1.0, t))
+    return (
+        int(color1[0] + (color2[0] - color1[0]) * t),
+        int(color1[1] + (color2[1] - color1[1]) * t),
+        int(color1[2] + (color2[2] - color1[2]) * t)
+    )
+
+
+def get_packet_completion_color(completion_percentage: float) -> Tuple[int, int, int]:
+    """
+    Get satellite color based on packet completion percentage.
+    
+    Red (0%) -> Yellow (50%) -> Green (100%)
+    
+    Parameters
+    ----------
+    completion_percentage : float
+        Percentage of packets received (0.0 to 100.0)
+    
+    Returns
+    -------
+    Tuple[int, int, int]
+        RGB color tuple
+    """
+    # Normalize to 0-1 range
+    t = completion_percentage / 100.0
+    t = max(0.0, min(1.0, t))
+    
+    if t <= 0.5:
+        # Red to Yellow (0% to 50%)
+        return interpolate_color(
+            Colors.SATELLITE_NO_PACKETS,
+            Colors.SATELLITE_HALF_PACKETS,
+            t * 2.0  # Scale 0-0.5 to 0-1
+        )
+    else:
+        # Yellow to Green (50% to 100%)
+        return interpolate_color(
+            Colors.SATELLITE_HALF_PACKETS,
+            Colors.SATELLITE_ALL_PACKETS,
+            (t - 0.5) * 2.0  # Scale 0.5-1 to 0-1
+        )
 
 
 # Import EARTH_RADIUS_KM - handle both direct and package imports
 try:
-    from simulation import EARTH_RADIUS_KM
+    from ..simulation import EARTH_RADIUS_KM
 except ImportError:
-    EARTH_RADIUS_KM = 6371.0
+    try:
+        from simulation import EARTH_RADIUS_KM
+    except ImportError:
+        EARTH_RADIUS_KM = 6371.0
 
 
 class Renderer:
@@ -406,10 +464,28 @@ class Renderer:
         self,
         camera: Camera,
         orbit,  # EllipticalOrbit
-        color_front: Tuple[int, int, int],
-        color_back: Tuple[int, int, int]
+        color_front: Tuple[int, int, int] = None,
+        color_back: Tuple[int, int, int] = None
     ) -> None:
-        """Draw an elliptical orbit around Earth."""
+        """
+        Draw an elliptical orbit around Earth.
+        
+        Parameters
+        ----------
+        camera : Camera
+            The camera for projection
+        orbit : EllipticalOrbit
+            The orbit to draw
+        color_front : Tuple[int, int, int], optional
+            Color for visible portions (default: light gray)
+        color_back : Tuple[int, int, int], optional
+            Color for occluded portions (default: darker gray)
+        """
+        if color_front is None:
+            color_front = Colors.ORBIT_FRONT
+        if color_back is None:
+            color_back = Colors.ORBIT_BACK
+            
         screen_points_front = []
         screen_points_back = []
         
@@ -436,10 +512,39 @@ class Renderer:
             self._draw_line_segments(screen_points_front, color_front, line_width)
     
     def draw_orbits(self, camera: Camera, orbits: List) -> None:
-        """Draw all orbits with different colors."""
-        for i, orbit in enumerate(orbits):
-            color_front, color_back = Colors.ORBIT_COLORS[i % len(Colors.ORBIT_COLORS)]
-            self.draw_orbit(camera, orbit, color_front, color_back)
+        """
+        Draw all unique orbits in light gray.
+        
+        If multiple satellites share the same orbit, only draw it once.
+        
+        Parameters
+        ----------
+        camera : Camera
+            The camera for projection
+        orbits : List[EllipticalOrbit]
+            List of orbits to draw
+        """
+        # Track which orbits we've already drawn using their key parameters
+        drawn_orbits: Set[Tuple] = set()
+        
+        for orbit in orbits:
+            # Create a hashable key from orbit parameters
+            # Using rounded values to handle floating point comparison
+            orbit_key = (
+                round(orbit.semi_major_axis, 2),
+                round(orbit.eccentricity, 6),
+                round(orbit.inclination, 6),
+                round(orbit.longitude_of_ascending_node, 6),
+                round(orbit.argument_of_periapsis, 6)
+            )
+            
+            if orbit_key not in drawn_orbits:
+                drawn_orbits.add(orbit_key)
+                self.draw_orbit(
+                    camera, orbit,
+                    color_front=Colors.ORBIT_FRONT,
+                    color_back=Colors.ORBIT_BACK
+                )
     
     def draw_satellite(
         self,
@@ -523,10 +628,35 @@ class Renderer:
         
         return [tip, left, right]
     
-    def draw_satellites(self, camera: Camera, satellites: List) -> None:
-        """Draw all satellites with different colors."""
-        for i, satellite in enumerate(satellites):
-            color = Colors.SATELLITE_COLORS[i % len(Colors.SATELLITE_COLORS)]
+    def draw_satellites(
+        self,
+        camera: Camera,
+        satellites: List,
+        completion_percentages: Optional[Dict[str, float]] = None
+    ) -> None:
+        """
+        Draw all satellites colored by their packet completion status.
+        
+        Parameters
+        ----------
+        camera : Camera
+            The camera for projection
+        satellites : List[Satellite]
+            List of satellites to draw
+        completion_percentages : Optional[Dict[str, float]]
+            Dictionary mapping satellite IDs to completion percentages (0-100).
+            If None, all satellites are drawn red (0% completion).
+        """
+        for satellite in satellites:
+            # Get completion percentage for this satellite
+            if completion_percentages is not None:
+                completion = completion_percentages.get(satellite.satellite_id, 0.0)
+            else:
+                completion = 0.0
+            
+            # Get color based on completion
+            color = get_packet_completion_color(completion)
+            
             self.draw_satellite(camera, satellite, color)
     
     def draw_base_station(
@@ -772,6 +902,9 @@ class Renderer:
         active_count = len(simulation.state.active_links)
         bs_link_count = len(simulation.state.base_station_links)
         
+        # Get agent statistics
+        stats = simulation.state.agent_statistics
+        
         info_lines = [
             f"Camera Longitude: {camera.theta_degrees:.1f}°",
             f"Camera Latitude: {camera.phi_degrees:.1f}°",
@@ -781,6 +914,10 @@ class Renderer:
             f"Time Scale: {time_scale:.0f}x" + (" [PAUSED]" if paused else ""),
             f"Active Links: {active_count}/{total_pairs}",
             f"Base Station Links: {bs_link_count}",
+            "",
+            f"Packets: {stats.total_packets}",
+            f"Avg Completion: {stats.average_completion:.1f}%",
+            f"Fully Updated: {stats.fully_updated_count}/{n}",
             "",
             "Controls:",
             "← → : Rotate longitude",
@@ -796,23 +933,52 @@ class Renderer:
         for line in info_lines:
             y += self.draw_text(line, (10, y), font) + 2
         
+        # Draw color legend
+        y += 10
+        self.draw_text("Satellite Colors:", (10, y), font)
+        y += 20
+        
+        # Red square - 0%
+        pygame.draw.rect(self.screen, Colors.SATELLITE_NO_PACKETS, (10, y, 15, 15))
+        self.draw_text("0% packets", (30, y), font, Colors.TEXT_DIM)
+        y += 20
+        
+        # Yellow square - 50%
+        pygame.draw.rect(self.screen, Colors.SATELLITE_HALF_PACKETS, (10, y, 15, 15))
+        self.draw_text("50% packets", (30, y), font, Colors.TEXT_DIM)
+        y += 20
+        
+        # Green square - 100%
+        pygame.draw.rect(self.screen, Colors.SATELLITE_ALL_PACKETS, (10, y, 15, 15))
+        self.draw_text("100% packets", (30, y), font, Colors.TEXT_DIM)
+        
         # Satellite details on the right side
         y = 10
         for i, satellite in enumerate(simulation.satellites):
             geo = satellite.get_geospatial_position()
             orbit = satellite.orbit
             
+            # Get agent completion for this satellite
+            agent_id = simulation.satellite_id_to_agent_id.get(satellite.satellite_id)
+            if agent_id is not None:
+                completion = stats.completion_percentage.get(agent_id, 0.0)
+            else:
+                completion = 0.0
+            
             sat_info = [
                 f"Satellite {i+1}: {satellite.satellite_id}",
                 f"  Alt: {geo.altitude:.0f} km",
                 f"  Lat: {geo.latitude_deg:+.1f}°",
                 f"  Lon: {geo.longitude_deg:+.1f}°",
-                f"  Orbit: {satellite.position*100:.1f}%",
-                f"  Period: {orbit.period/60:.1f} min",
+                f"  Packets: {completion:.0f}%",
             ]
             
-            for line in sat_info:
-                y += self.draw_text(line, (self.screen_width - 200, y), font, Colors.TEXT_DIM) + 1
+            # Color the satellite name based on completion
+            sat_color = get_packet_completion_color(completion)
+            
+            for j, line in enumerate(sat_info):
+                line_color = sat_color if j == 0 else Colors.TEXT_DIM
+                y += self.draw_text(line, (self.screen_width - 200, y), font, line_color) + 1
             y += 8
             
             # Limit display to avoid overflow

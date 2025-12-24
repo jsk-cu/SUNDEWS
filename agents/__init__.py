@@ -50,7 +50,8 @@ Creating Custom Agents:
     See the agents directory for example implementations.
 """
 
-from .base_agent import Agent
+#from .base_agent import Agent
+from .min_agent import Agent
 
 
 __all__ = [
