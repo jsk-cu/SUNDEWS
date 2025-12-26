@@ -24,6 +24,7 @@ class Colors:
     GRID_LINE_BACK = (25, 55, 95)
     TEXT = (220, 220, 220)
     TEXT_DIM = (200, 200, 200)
+    TEXT_SUCCESS = (50, 255, 100)
 
     # Orbit colors
     ORBIT_FRONT = (180, 180, 180)
@@ -58,11 +59,7 @@ def interpolate_color(
 
 
 def get_packet_completion_color(completion_percentage: float) -> Tuple[int, int, int]:
-    """
-    Get satellite color based on packet completion.
-
-    Red (0%) -> Yellow (50%) -> Green (100%)
-    """
+    """Get satellite color based on packet completion."""
     t = max(0.0, min(1.0, completion_percentage / 100.0))
 
     if t <= 0.5:
@@ -86,24 +83,7 @@ except ImportError:
 
 
 class Renderer:
-    """
-    Handles all rendering operations.
-
-    Parameters
-    ----------
-    screen : pygame.Surface
-        Target surface.
-    earth_visual_radius : float
-        Visual radius of Earth in rendering units.
-    num_latitude_lines : int
-        Number of latitude grid lines.
-    num_longitude_lines : int
-        Number of longitude grid lines.
-    orbit_points : int
-        Points to sample when drawing orbits.
-    satellite_size : int
-        Base satellite marker size (pixels).
-    """
+    """Handles all rendering operations."""
 
     def __init__(
         self,
@@ -124,24 +104,15 @@ class Renderer:
         self.orbit_points = orbit_points
         self.satellite_size = satellite_size
 
-        # Scale: km to visual units
         self.scale_factor = earth_visual_radius / EARTH_RADIUS_KM
 
     def clear(self, color: Tuple[int, int, int] = Colors.BACKGROUND) -> None:
-        """Clear screen with background color."""
         self.screen.fill(color)
 
     def project_point(
         self, point_3d: np.ndarray, camera: Camera
     ) -> Tuple[Optional[Tuple[float, float]], float]:
-        """
-        Project 3D point to 2D screen coordinates.
-
-        Returns
-        -------
-        tuple
-            ((screen_x, screen_y), depth) or (None, depth) if behind camera.
-        """
+        """Project 3D point to 2D screen coordinates."""
         cam_pos = camera.get_position()
         forward, up, right = camera.get_view_matrix()
 
@@ -161,23 +132,16 @@ class Renderer:
         return (screen_x, screen_y), depth
 
     def get_projected_sphere_radius(self, camera: Camera) -> float:
-        """Calculate apparent radius of Earth on screen."""
         fov_scale = self.screen_height / 2
         return self.earth_visual_radius / camera.distance * fov_scale
 
-    def is_point_visible_on_sphere(
-        self, point_3d: np.ndarray, camera: Camera
-    ) -> bool:
-        """Check if a point on Earth's surface faces the camera."""
+    def is_point_visible_on_sphere(self, point_3d: np.ndarray, camera: Camera) -> bool:
         cam_pos = camera.get_position()
         to_camera = cam_pos - point_3d
         normal = point_3d / np.linalg.norm(point_3d)
         return np.dot(normal, to_camera) > 0
 
-    def is_point_in_front_of_earth(
-        self, point_3d: np.ndarray, camera: Camera
-    ) -> bool:
-        """Check if a point in space is visible (not occluded by Earth)."""
+    def is_point_in_front_of_earth(self, point_3d: np.ndarray, camera: Camera) -> bool:
         cam_pos = camera.get_position()
         point_dist = np.linalg.norm(point_3d)
 
@@ -248,7 +212,6 @@ class Renderer:
 
     def draw_earth_grid(self, camera: Camera) -> None:
         """Draw latitude and longitude grid lines on Earth's surface."""
-        # Draw back lines first (behind the sphere)
         for i in range(1, self.num_latitude_lines):
             lat = -math.pi / 2 + math.pi * i / self.num_latitude_lines
             self._draw_latitude_line(camera, lat, is_back=True)
@@ -257,7 +220,6 @@ class Renderer:
             lon = 2 * math.pi * i / self.num_longitude_lines
             self._draw_longitude_line(camera, lon, is_back=True)
 
-        # Draw front lines (visible on the sphere)
         for i in range(1, self.num_latitude_lines):
             lat = -math.pi / 2 + math.pi * i / self.num_latitude_lines
             self._draw_latitude_line(camera, lat, is_back=False)
@@ -266,16 +228,7 @@ class Renderer:
             lon = 2 * math.pi * i / self.num_longitude_lines
             self._draw_longitude_line(camera, lon, is_back=False)
 
-    def _draw_latitude_line(
-        self, camera: Camera, latitude: float, is_back: bool = False
-    ) -> None:
-        """
-        Draw a latitude line (parallel to equator) on the sphere surface.
-
-        The line is drawn as small segments, with each segment colored
-        based on whether it's on the visible or hidden side of the sphere.
-        """
-        # Points on the sphere at this latitude
+    def _draw_latitude_line(self, camera: Camera, latitude: float, is_back: bool = False) -> None:
         num_points = 120
         z = self.earth_visual_radius * math.sin(latitude)
         circle_radius = self.earth_visual_radius * math.cos(latitude)
@@ -292,12 +245,7 @@ class Renderer:
 
         self._draw_sphere_line(camera, points, is_back)
 
-    def _draw_longitude_line(
-        self, camera: Camera, longitude: float, is_back: bool = False
-    ) -> None:
-        """
-        Draw a longitude line (meridian) on the sphere surface.
-        """
+    def _draw_longitude_line(self, camera: Camera, longitude: float, is_back: bool = False) -> None:
         num_points = 120
         points = []
 
@@ -310,23 +258,10 @@ class Renderer:
 
         self._draw_sphere_line(camera, points, is_back)
 
-    def _draw_sphere_line(
-        self,
-        camera: Camera,
-        points: List[np.ndarray],
-        draw_back: bool,
-    ) -> None:
-        """
-        Draw a line on the sphere, handling front/back visibility.
-
-        Each segment is drawn only if it matches the requested visibility
-        (front or back). This ensures proper layering when the sphere
-        is drawn between back and front lines.
-        """
+    def _draw_sphere_line(self, camera: Camera, points: List[np.ndarray], draw_back: bool) -> None:
         if len(points) < 2:
             return
 
-        # Project all points and determine visibility
         projected = []
         visible = []
 
@@ -336,7 +271,6 @@ class Renderer:
             projected.append(proj)
             visible.append(is_visible)
 
-        # Draw segments
         for i in range(len(points) - 1):
             proj1, proj2 = projected[i], projected[i + 1]
             vis1, vis2 = visible[i], visible[i + 1]
@@ -344,7 +278,6 @@ class Renderer:
             if proj1 is None or proj2 is None:
                 continue
 
-            # Check if segment is on the requested side
             segment_visible = vis1 and vis2
             segment_back = not vis1 and not vis2
 
@@ -353,37 +286,27 @@ class Renderer:
             if not draw_back and not segment_visible:
                 continue
 
-            # Skip segments that span too much screen distance (wrap-around artifacts)
             dx = proj2[0] - proj1[0]
             dy = proj2[1] - proj1[1]
-            if dx * dx + dy * dy > 2500:  # 50 pixel threshold
+            if dx * dx + dy * dy > 2500:
                 continue
 
             color = Colors.GRID_LINE_BACK if draw_back else Colors.GRID_LINE
             width = 1 if draw_back else max(1, int(2 / camera.distance * 2))
 
             pygame.draw.line(
-                self.screen,
-                color,
+                self.screen, color,
                 (int(proj1[0]), int(proj1[1])),
                 (int(proj2[0]), int(proj2[1])),
                 width,
             )
 
-    def draw_orbit(
-        self,
-        camera: Camera,
-        orbit,
-        color_front: Tuple[int, int, int] = None,
-        color_back: Tuple[int, int, int] = None,
-    ) -> None:
-        """Draw an elliptical orbit."""
+    def draw_orbit(self, camera: Camera, orbit, color_front=None, color_back=None) -> None:
         if color_front is None:
             color_front = Colors.ORBIT_FRONT
         if color_back is None:
             color_back = Colors.ORBIT_BACK
 
-        # Generate orbit points
         points = []
         for i in range(self.orbit_points + 1):
             nu = 2 * math.pi * i / self.orbit_points
@@ -391,21 +314,11 @@ class Renderer:
             pos_visual = pos_km * self.scale_factor
             points.append(pos_visual)
 
-        # Draw back segments first
         self._draw_space_line(camera, points, color_back, 1, draw_back=True)
-        # Then front segments
         line_width = max(2, int(4 / camera.distance * 2))
         self._draw_space_line(camera, points, color_front, line_width, draw_back=False)
 
-    def _draw_space_line(
-        self,
-        camera: Camera,
-        points: List[np.ndarray],
-        color: Tuple[int, int, int],
-        width: int,
-        draw_back: bool,
-    ) -> None:
-        """Draw a line in space, handling Earth occlusion."""
+    def _draw_space_line(self, camera: Camera, points: List[np.ndarray], color, width: int, draw_back: bool) -> None:
         if len(points) < 2:
             return
 
@@ -429,22 +342,19 @@ class Renderer:
             if not draw_back and not segment_front:
                 continue
 
-            # Skip wrap-around artifacts
             dx = proj2[0] - proj1[0]
             dy = proj2[1] - proj1[1]
             if dx * dx + dy * dy > 2500:
                 continue
 
             pygame.draw.line(
-                self.screen,
-                color,
+                self.screen, color,
                 (int(proj1[0]), int(proj1[1])),
                 (int(proj2[0]), int(proj2[1])),
                 width,
             )
 
     def draw_orbits(self, camera: Camera, orbits: List) -> None:
-        """Draw all unique orbits."""
         drawn: Set[Tuple] = set()
 
         for orbit in orbits:
@@ -460,14 +370,7 @@ class Renderer:
                 drawn.add(key)
                 self.draw_orbit(camera, orbit)
 
-    def draw_satellite(
-        self,
-        camera: Camera,
-        satellite,
-        color: Tuple[int, int, int],
-        size: Optional[int] = None,
-    ) -> None:
-        """Draw a satellite as a triangle."""
+    def draw_satellite(self, camera: Camera, satellite, color, size=None) -> None:
         if size is None:
             size = self.satellite_size
 
@@ -480,11 +383,9 @@ class Renderer:
         if proj is None:
             return
 
-        # Perspective size
         perspective_size = size * (3.0 / depth) if depth > 0 else size
         perspective_size = max(4, min(20, perspective_size))
 
-        # Get direction from velocity
         vel_km = satellite.get_velocity_eci()
         vel_visual = vel_km * self.scale_factor
         pos_future = pos_visual + vel_visual * 100
@@ -510,13 +411,7 @@ class Renderer:
         pygame.draw.polygon(self.screen, draw_color, int_points)
         pygame.draw.polygon(self.screen, outline_color, int_points, outline_width)
 
-    def _get_triangle_points(
-        self,
-        center: Tuple[float, float],
-        size: float,
-        direction: Optional[Tuple[float, float]] = None,
-    ) -> List[Tuple[float, float]]:
-        """Generate triangle vertices for satellite marker."""
+    def _get_triangle_points(self, center, size, direction=None):
         if direction is not None and (direction[0] != 0 or direction[1] != 0):
             dx, dy = direction
             mag = math.sqrt(dx * dx + dy * dy)
@@ -528,24 +423,12 @@ class Renderer:
 
         cx, cy = center
         tip = (cx + dx * size, cy + dy * size)
-        left = (
-            cx - dx * size * 0.5 + px * size * 0.6,
-            cy - dy * size * 0.5 + py * size * 0.6,
-        )
-        right = (
-            cx - dx * size * 0.5 - px * size * 0.6,
-            cy - dy * size * 0.5 - py * size * 0.6,
-        )
+        left = (cx - dx * size * 0.5 + px * size * 0.6, cy - dy * size * 0.5 + py * size * 0.6)
+        right = (cx - dx * size * 0.5 - px * size * 0.6, cy - dy * size * 0.5 - py * size * 0.6)
 
         return [tip, left, right]
 
-    def draw_satellites(
-        self,
-        camera: Camera,
-        satellites: List,
-        completion_percentages: Optional[Dict[str, float]] = None,
-    ) -> None:
-        """Draw all satellites colored by completion status."""
+    def draw_satellites(self, camera: Camera, satellites: List, completion_percentages=None) -> None:
         for satellite in satellites:
             if completion_percentages is not None:
                 completion = completion_percentages.get(satellite.satellite_id, 0.0)
@@ -555,14 +438,7 @@ class Renderer:
             color = get_packet_completion_color(completion)
             self.draw_satellite(camera, satellite, color)
 
-    def draw_base_station(
-        self,
-        camera: Camera,
-        base_station,
-        earth_rotation_angle: float,
-        size: int = 10,
-    ) -> None:
-        """Draw a base station as a square on Earth's surface."""
+    def draw_base_station(self, camera: Camera, base_station, earth_rotation_angle: float, size: int = 10) -> None:
         pos_km = base_station.get_position_eci(earth_rotation_angle)
         pos_visual = pos_km * self.scale_factor
 
@@ -594,17 +470,11 @@ class Renderer:
         pygame.draw.rect(self.screen, color, rect)
         pygame.draw.rect(self.screen, outline_color, rect, outline_width)
 
-    def draw_base_stations(
-        self, camera: Camera, base_stations: List, earth_rotation_angle: float
-    ) -> None:
-        """Draw all base stations."""
+    def draw_base_stations(self, camera: Camera, base_stations: List, earth_rotation_angle: float) -> None:
         for base_station in base_stations:
             self.draw_base_station(camera, base_station, earth_rotation_angle)
 
-    def draw_communication_links(
-        self, camera: Camera, satellites: List, active_links: set
-    ) -> None:
-        """Draw inter-satellite communication links."""
+    def draw_communication_links(self, camera: Camera, satellites: List, active_links: set) -> None:
         if not active_links:
             return
 
@@ -637,22 +507,13 @@ class Renderer:
                 width = 1
 
             pygame.draw.line(
-                self.screen,
-                color,
+                self.screen, color,
                 (int(proj1[0]), int(proj1[1])),
                 (int(proj2[0]), int(proj2[1])),
                 width,
             )
 
-    def draw_base_station_links(
-        self,
-        camera: Camera,
-        base_stations: List,
-        satellites: List,
-        base_station_links: set,
-        earth_rotation_angle: float,
-    ) -> None:
-        """Draw base station to satellite communication links."""
+    def draw_base_station_links(self, camera: Camera, base_stations: List, satellites: List, base_station_links: set, earth_rotation_angle: float) -> None:
         if not base_station_links:
             return
 
@@ -686,21 +547,13 @@ class Renderer:
                 width = 1
 
             pygame.draw.line(
-                self.screen,
-                color,
+                self.screen, color,
                 (int(proj_bs[0]), int(proj_bs[1])),
                 (int(proj_sat[0]), int(proj_sat[1])),
                 width,
             )
 
-    def draw_text(
-        self,
-        text: str,
-        position: Tuple[int, int],
-        font: pygame.font.Font,
-        color: Tuple[int, int, int] = Colors.TEXT,
-    ) -> int:
-        """Draw text and return height."""
+    def draw_text(self, text: str, position, font, color=Colors.TEXT) -> int:
         surface = font.render(text, True, color)
         self.screen.blit(surface, position)
         return surface.get_height()
@@ -709,11 +562,13 @@ class Renderer:
         self,
         camera: Camera,
         simulation,
-        font: pygame.font.Font,
+        font,
         time_scale: float,
         paused: bool,
+        log_saved: bool = False,
+        log_location: Optional[str] = None
     ) -> None:
-        """Draw information panel."""
+        """Draw information panel with log status."""
         sim_time = simulation.state.time
         hours = int(sim_time // 3600)
         minutes = int((sim_time % 3600) // 60)
@@ -739,6 +594,17 @@ class Renderer:
             f"Packets: {stats.total_packets}",
             f"Avg Completion: {stats.average_completion:.1f}%",
             f"Fully Updated: {stats.fully_updated_count}/{n}",
+        ]
+
+        # Add log status if logging is enabled
+        if log_location is not None:
+            info_lines.append("")
+            if log_saved:
+                info_lines.append(f"Log: SAVED")
+            else:
+                info_lines.append(f"Log: Recording...")
+
+        info_lines.extend([
             "",
             "Controls:",
             "← → : Rotate longitude",
@@ -748,11 +614,15 @@ class Renderer:
             "SPACE : Pause/Resume",
             "R : Regenerate",
             "ESC : Quit",
-        ]
+        ])
 
         y = 10
         for line in info_lines:
-            y += self.draw_text(line, (10, y), font) + 2
+            # Highlight log saved status
+            if line == "Log: SAVED":
+                y += self.draw_text(line, (10, y), font, Colors.TEXT_SUCCESS) + 2
+            else:
+                y += self.draw_text(line, (10, y), font) + 2
 
         # Color legend
         y += 10

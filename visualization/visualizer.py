@@ -48,6 +48,8 @@ class Visualizer:
         Initial simulation time scale (simulation seconds per real second)
     paused : bool
         Start paused (default False)
+    log_location : str, optional
+        Path to save simulation log when update completes (None = no logging)
     
     Attributes
     ----------
@@ -65,6 +67,10 @@ class Visualizer:
         Whether simulation is paused
     running : bool
         Whether the visualizer is running
+    log_location : str
+        Path for log file (None if logging disabled)
+    log_saved : bool
+        Whether the log has been saved (prevents duplicate saves)
     """
     
     DEFAULT_TIME_SCALE = 60.0  # 1 minute per second
@@ -77,7 +83,8 @@ class Visualizer:
         height: int = 800,
         title: str = "Satellite Constellation Visualizer",
         time_scale: float = DEFAULT_TIME_SCALE,
-        paused: bool = False
+        paused: bool = False,
+        log_location: Optional[str] = None
     ):
         # Initialize Pygame
         pygame.init()
@@ -97,6 +104,10 @@ class Visualizer:
         self.paused = paused
         self.running = False
         
+        # Logging
+        self.log_location = log_location
+        self.log_saved = False
+        
         # Pygame resources
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont('Arial', 16)
@@ -111,6 +122,7 @@ class Visualizer:
             An initialized simulation
         """
         self.simulation = simulation
+        self.log_saved = False  # Reset log saved flag
     
     def create_simulation(
         self,
@@ -141,14 +153,18 @@ class Visualizer:
         if constellation_type not in type_map:
             raise ValueError(f"Unknown constellation type: {constellation_type}")
         
+        # Enable logging if log_location is set
+        enable_logging = self.log_location is not None
+        
         config = SimulationConfig(constellation_type=type_map[constellation_type])
         
         for key, value in kwargs.items():
             if hasattr(config, key):
                 setattr(config, key, value)
         
-        self.simulation = Simulation(config)
+        self.simulation = Simulation(config, enable_logging=enable_logging)
         self.simulation.initialize()
+        self.log_saved = False
         
         return self.simulation
     
@@ -173,6 +189,7 @@ class Visualizer:
             # Regenerate constellation
             if self.simulation is not None:
                 self.simulation.regenerate()
+                self.log_saved = False  # Reset log saved flag
                 print("Regenerated constellation")
         
         elif key == pygame.K_LEFTBRACKET:
@@ -218,6 +235,25 @@ class Visualizer:
         if not self.paused:
             sim_dt = dt * self.time_scale
             self.simulation.step(sim_dt)
+            
+            # Check if update is complete and save log
+            if self.simulation.is_update_complete() and not self.log_saved:
+                self._save_log_on_completion()
+    
+    def _save_log_on_completion(self) -> None:
+        """Save the simulation log when update completes."""
+        if self.log_location is None or self.log_saved:
+            return
+        
+        if self.simulation is None:
+            return
+        
+        try:
+            self.simulation.save_log(self.log_location)
+            self.log_saved = True
+            print(f"\n*** Update complete! Log saved to: {self.log_location} ***")
+        except Exception as e:
+            print(f"\nError saving log: {e}")
     
     def _get_satellite_completion_percentages(self) -> Dict[str, float]:
         """
@@ -310,7 +346,9 @@ class Visualizer:
             self.simulation,
             self.font,
             self.time_scale,
-            self.paused
+            self.paused,
+            log_saved=self.log_saved,
+            log_location=self.log_location
         )
         
         # Update display
@@ -383,7 +421,8 @@ def run_visualizer(
     time_scale: float = 60.0,
     paused: bool = False,
     width: int = 1000,
-    height: int = 800
+    height: int = 800,
+    log_location: Optional[str] = None
 ) -> None:
     """
     Convenience function to launch the visualizer with a constellation.
@@ -414,12 +453,15 @@ def run_visualizer(
         Window width
     height : int
         Window height
+    log_location : str, optional
+        Path to save log when update completes
     """
     visualizer = Visualizer(
         width=width,
         height=height,
         time_scale=time_scale,
-        paused=paused
+        paused=paused,
+        log_location=log_location
     )
     
     visualizer.create_simulation(
@@ -439,6 +481,8 @@ def run_visualizer(
     print(f"  Base Stations: {len(visualizer.simulation.base_stations)}")
     print(f"  Packets: {num_packets}")
     print(f"\nSatellite colors: Red (0%) -> Yellow (50%) -> Green (100%)")
+    if log_location:
+        print(f"\nLogging enabled: Log will be saved to {log_location} when update completes")
     
     visualizer.run()
 

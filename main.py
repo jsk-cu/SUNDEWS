@@ -10,6 +10,7 @@ Usage:
     python main.py --type walker_star               # Walker-Star (polar)
     python main.py --type random --num 10           # 10 random satellites
     python main.py --headless --duration 3600       # Headless simulation
+    python main.py --log-loc sim.json               # Enable logging, save to sim.json
     python main.py --help                           # Show all options
 """
 
@@ -30,6 +31,7 @@ Examples:
   %(prog)s --type random --num 15             # 15 random satellites
   %(prog)s --headless --duration 7200         # 2-hour headless run
   %(prog)s --bs-range 5000 --comm-range 3000  # Custom communication ranges
+  %(prog)s --log-loc output.json              # Enable logging, save to output.json
 
 Controls (visualization mode):
   Arrow keys  : Rotate camera
@@ -185,6 +187,16 @@ Controls (visualization mode):
     )
 
     # -------------------------------------------------------------------------
+    # Logging
+    # -------------------------------------------------------------------------
+    parser.add_argument(
+        "--log-loc",
+        type=str,
+        default=None,
+        help="Path to save simulation log (enables logging when specified)",
+    )
+
+    # -------------------------------------------------------------------------
     # Headless mode
     # -------------------------------------------------------------------------
     parser.add_argument(
@@ -242,6 +254,9 @@ Controls (visualization mode):
     # Get the selected agent class
     agent_class = get_agent_class(args.agent_controller)
 
+    # Determine if logging is enabled
+    enable_logging = args.log_loc is not None
+
     # -------------------------------------------------------------------------
     # Create simulation configuration
     # -------------------------------------------------------------------------
@@ -266,8 +281,8 @@ Controls (visualization mode):
     # -------------------------------------------------------------------------
     # Create and initialize simulation
     # -------------------------------------------------------------------------
-    sim = Simulation(config)
-    sim.initialize()
+    sim = Simulation(config, enable_logging=enable_logging)
+    sim.initialize(timestep=args.timestep)
 
     # -------------------------------------------------------------------------
     # Print configuration summary
@@ -300,13 +315,19 @@ Controls (visualization mode):
     print(f"  Altitude: {args.bs_altitude} km")
     print(f"  Range: {args.bs_range} km")
 
+    if enable_logging:
+        print(f"\nLogging: Enabled (will save to {args.log_loc})")
+    else:
+        print(f"\nLogging: Disabled")
+
     # -------------------------------------------------------------------------
     # Run simulation
     # -------------------------------------------------------------------------
     if args.headless:
         print(f"\n{'=' * 60}")
-        print(f"Running headless simulation for {args.duration:.0f} seconds...")
+        print(f"Running headless simulation for up to {args.duration:.0f} seconds...")
         print(f"Timestep: {args.timestep:.1f} seconds")
+        print(f"(Will terminate early if all satellites receive all packets)")
         print(f"{'=' * 60}")
 
         elapsed = 0.0
@@ -339,10 +360,11 @@ Controls (visualization mode):
 
                 next_report += report_interval
 
-                # Check if update complete
-                if sim.is_update_complete():
-                    print("\n*** All satellites have received the complete update! ***")
-                    break
+            # Check if update complete - terminate early
+            if sim.is_update_complete():
+                print("\n*** All satellites have received the complete update! ***")
+                print(f"Completed at simulation time: {sim.simulation_time:.0f} seconds ({sim.simulation_time/60:.1f} minutes)")
+                break
 
         # Final summary
         print(f"\n{'=' * 60}")
@@ -376,6 +398,11 @@ Controls (visualization mode):
                 f"({visible/total*100:.1f}%)"
             )
 
+        # Save log if enabled
+        if enable_logging:
+            sim.save_log(args.log_loc)
+            print(f"\nSimulation log saved to: {args.log_loc}")
+
     else:
         # Run with visualization
         try:
@@ -396,6 +423,8 @@ Controls (visualization mode):
         print("  R           : Regenerate constellation")
         print("  ESC         : Quit")
         print("\nSatellite colors: Red (0%) -> Yellow (50%) -> Green (100%)")
+        if enable_logging:
+            print(f"\nLogging enabled: Log will be saved to {args.log_loc} when update completes")
         print()
 
         visualizer = Visualizer(
@@ -403,6 +432,7 @@ Controls (visualization mode):
             height=args.height,
             time_scale=args.time_scale,
             paused=args.paused,
+            log_location=args.log_loc,  # Pass log location to visualizer
         )
 
         visualizer.set_simulation(sim)

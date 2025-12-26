@@ -5,7 +5,7 @@ SatUpdate Simulation Package
 
 This package provides all the numerical simulation components for
 satellite constellation simulation, including orbital mechanics,
-satellite dynamics, and constellation generation.
+satellite dynamics, constellation generation, and logging.
 
 The simulation can be run independently of any visualization.
 """
@@ -42,8 +42,18 @@ from .simulation import (
     Simulation,
     SimulationConfig,
     SimulationState,
+    AgentStatistics,
     ConstellationType,
     create_simulation,
+)
+
+from .logging import (
+    SimulationLogger,
+    SimulationLogHeader,
+    TimestepRecord,
+    RequestRecord,
+    load_simulation_log,
+    create_logger_from_simulation,
 )
 
 
@@ -76,8 +86,17 @@ __all__ = [
     "Simulation",
     "SimulationConfig",
     "SimulationState",
+    "AgentStatistics",
     "ConstellationType",
     "create_simulation",
+    
+    # Logging
+    "SimulationLogger",
+    "SimulationLogHeader",
+    "TimestepRecord",
+    "RequestRecord",
+    "load_simulation_log",
+    "create_logger_from_simulation",
 ]
 
 __version__ = "1.0.0"

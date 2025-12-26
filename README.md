@@ -12,6 +12,7 @@ SatUpdate provides a complete framework for simulating satellite constellations 
 - **Ground station** modeling with configurable position and range
 - **Real-time 3D visualization** using Pygame
 - **Headless mode** for batch simulations and analysis
+- **JSON logging** for reproducibility and post-simulation analysis
 
 ## Project Structure
 
@@ -23,7 +24,8 @@ SatUpdate/
 │   ├── satellite.py         # Satellite class with position tracking
 │   ├── constellation.py     # Constellation generation factories
 │   ├── base_station.py      # Ground station modeling
-│   └── simulation.py        # Main Simulation class with agent protocol
+│   ├── simulation.py        # Main Simulation class with agent protocol
+│   └── logging.py           # JSON logging for analysis/reproducibility
 │
 ├── visualization/           # Pygame-based 3D rendering
 │   ├── __init__.py
@@ -37,7 +39,8 @@ SatUpdate/
 │   └── min_agent.py         # Minimum-first strategy
 │
 ├── examples/                # Example scripts
-│   └── run_simulation.py
+│   ├── run_simulation.py    # Basic simulation examples
+│   └── run_logging.py       # Logging and analysis examples
 │
 ├── main.py                  # Command-line interface
 └── README.md
@@ -81,8 +84,11 @@ python main.py --comm-range 3000 --bs-range 5000
 python main.py --agent-controller min   # Orders by completion (default)
 python main.py --agent-controller base  # Dummy agent (no distribution)
 
-# Headless simulation for 2 hours
+# Headless simulation (terminates early when update completes)
 python main.py --headless --duration 7200 --timestep 60
+
+# Enable logging (saves JSON log when update completes)
+python main.py --headless --log-loc simulation_log.json
 
 # Full help
 python main.py --help
@@ -108,7 +114,7 @@ config = SimulationConfig(
     base_station_range=8000,         # ground station range (km)
 )
 
-# Create and initialize simulation
+# Create and initialize simulation (logging off by default)
 sim = Simulation(config)
 sim.initialize()
 
@@ -118,6 +124,35 @@ while not sim.is_update_complete():
     stats = sim.state.agent_statistics
     print(f"Time: {sim.simulation_time/60:.0f} min, "
           f"Completion: {stats.average_completion:.1f}%")
+```
+
+### With Logging
+
+```python
+from simulation import Simulation, SimulationConfig, ConstellationType
+import math
+
+config = SimulationConfig(
+    constellation_type=ConstellationType.WALKER_DELTA,
+    num_planes=3,
+    sats_per_plane=4,
+    num_packets=50,
+    random_seed=42,  # For reproducibility
+)
+
+# Enable logging by passing enable_logging=True
+sim = Simulation(config, enable_logging=True)
+sim.initialize(timestep=60.0)
+
+# Run until complete
+while not sim.is_update_complete():
+    sim.step(60.0)
+
+# Save log to file
+sim.save_log("simulation_log.json")
+
+# Or get log as dictionary
+log = sim.get_log()
 ```
 
 ## Command-Line Arguments
@@ -164,19 +199,28 @@ while not sim.is_update_complete():
 | `--bs-altitude` | 0 | Base station altitude (km) |
 | `--bs-range` | 10000 | Base station communication range (km) |
 
+### Logging
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--log-loc` | None | Path to save simulation log. **Enables logging when specified.** |
+
+Logging is **disabled by default**. Specifying `--log-loc` both enables logging and sets the output file path.
+
 ### Simulation Control
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--time-scale` | 60 | Simulation seconds per real second |
+| `--time-scale` | 60 | Simulation seconds per real second (visualization only) |
 | `--seed` | random | Random seed for reproducibility |
-| `--paused` | false | Start simulation paused |
+| `--paused` | false | Start simulation paused (visualization only) |
 
 ### Headless Mode
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--headless` | false | Run without visualization |
-| `--duration` | 3600 | Simulation duration (seconds) |
+| `--duration` | 3600 | Maximum simulation duration (seconds) |
 | `--timestep` | 60 | Simulation timestep (seconds) |
+
+**Note:** The simulation terminates early when all satellites have received all packets.
 
 ### Window Settings
 | Argument | Default | Description |
@@ -230,7 +274,9 @@ python main.py --type random --num 15 --seed 42
 
 ## Software Update Distribution Protocol
 
-The simulation includes an agent-based packet distribution protocol:
+The simulation models a software update being disseminated from a ground station to all satellites in the constellation.
+
+### Protocol Overview
 
 1. **Base Station** starts with all packets (complete software update)
 2. **Satellites** start with no packets
@@ -242,10 +288,10 @@ The simulation includes an agent-based packet distribution protocol:
 
 ### Agent Types
 
-| Agent | Description |
-|-------|-------------|
-| `base` | **Dummy agent**: Makes no requests. No packet distribution occurs. Useful as a control case. |
-| `min` | **Minimum-first**: Orders neighbors by completion percentage (lowest first), then requests the lowest-indexed missing packets from each. |
+| Agent | CLI Name | Description |
+|-------|----------|-------------|
+| `BaseAgent` | `base` | **Dummy agent**: Makes no requests. No packet distribution occurs. Useful as a control case. |
+| `MinAgent` | `min` | **Minimum-first** (default): Orders neighbors by completion percentage (lowest first), then requests the lowest-indexed missing packets from each. |
 
 ### Communication Requirements
 
@@ -258,69 +304,137 @@ For satellite-to-ground communication:
 2. **Within range** - Distance ≤ `base_station_range`
 3. **Above horizon** - Satellite elevation ≥ minimum elevation angle
 
-## API Reference
+## Simulation Logging
 
-### SimulationConfig
+The logging system captures simulation state and events in a structured JSON format for analysis and reproducibility.
 
-```python
-@dataclass
-class SimulationConfig:
-    constellation_type: ConstellationType  # WALKER_DELTA, WALKER_STAR, RANDOM
-    num_planes: int = 3                    # Orbital planes (Walker)
-    sats_per_plane: int = 4                # Satellites per plane (Walker)
-    num_satellites: int = 12               # Total satellites (random)
-    altitude: float = 550.0                # Orbital altitude (km)
-    inclination: float = 0.925             # Inclination (radians)
-    phasing_parameter: int = 1             # Walker phasing F
-    random_seed: Optional[int] = None      # For reproducibility
-    communication_range: Optional[float] = None  # km, None = unlimited
-    num_packets: int = 100                 # Packets in update
-    base_station_latitude: float = 0.0     # degrees
-    base_station_longitude: float = 0.0    # degrees
-    base_station_altitude: float = 0.0     # km
-    base_station_range: float = 10000.0    # km
+### Enabling Logging
+
+Logging is **off by default**. Enable it by:
+
+1. **Command line:** Use the `--log-loc` argument
+   ```bash
+   python main.py --headless --log-loc simulation_log.json
+   ```
+
+2. **Python API:** Pass `enable_logging=True` to `Simulation()`
+   ```python
+   sim = Simulation(config, enable_logging=True)
+   ```
+
+### Log Behavior
+
+- **Headless mode:** The simulation terminates when all satellites have all packets, and the log is saved at that point.
+- **Visualization mode:** The log is saved automatically when the update completes. The info panel displays "Log: SAVED" status.
+
+### Log Format
+
+Each log is a JSON file with two top-level keys:
+
+```json
+{
+  "header": { ... },
+  "time_series": [ ... ]
+}
 ```
 
-### Simulation Class
+#### Header
 
-```python
-class Simulation:
-    def initialize(self) -> None
-    def step(self, timestep: float) -> SimulationState
-    def run(self, duration: float, timestep: float) -> List[SimulationState]
-    def reset(self) -> None
-    def is_update_complete(self) -> bool
-    def get_inter_satellite_distances(self) -> Dict[Tuple[str, str], float]
-    def get_line_of_sight_matrix(self) -> Dict[Tuple[str, str], bool]
+Contains all configuration needed to replicate the simulation:
+
+| Field | Description |
+|-------|-------------|
+| `constellation_type` | Type of constellation (`walker_delta`, `walker_star`, `random`) |
+| `num_planes` | Number of orbital planes |
+| `sats_per_plane` | Satellites per plane |
+| `num_satellites` | Total number of satellites |
+| `altitude` | Orbital altitude in km |
+| `inclination` | Orbital inclination in radians |
+| `phasing_parameter` | Walker phasing parameter F |
+| `random_seed` | Random seed (null if not set) |
+| `communication_range` | Inter-satellite range in km (null = unlimited) |
+| `num_packets` | Total packets in the update |
+| `agent_type` | Agent controller name |
+| `base_station_latitude` | Base station latitude in degrees |
+| `base_station_longitude` | Base station longitude in degrees |
+| `base_station_altitude` | Base station altitude in km |
+| `base_station_range` | Base station communication range in km |
+| `timestep` | Simulation timestep in seconds |
+| `earth_radius` | Earth radius in km |
+| `earth_mass` | Earth mass in kg |
+| `created_at` | ISO timestamp when log was created |
+| `version` | Log format version |
+
+#### Time Series
+
+A list of records, one per timestep (starting at step 0):
+
+```json
+{
+  "step": 5,
+  "time": 300.0,
+  "packet_counts": {
+    "WD-P1S1": 5,
+    "WD-P1S2": 3,
+    "WD-P2S1": 2,
+    "WD-P2S2": 4
+  },
+  "communication_pairs": [
+    ["WD-P1S1", "WD-P2S2"],
+    ["WD-P1S3", "WD-P2S4"]
+  ],
+  "requests": [
+    ["WD-P1S1", "BASE-1", 4, true],
+    ["WD-P2S2", "WD-P1S1", 3, true],
+    ["WD-P1S2", "WD-P2S1", 0, false]
+  ]
+}
 ```
 
-### Satellite Class
+| Field | Description |
+|-------|-------------|
+| `step` | Timestep number |
+| `time` | Simulation time in seconds |
+| `packet_counts` | Dictionary: `{satellite_id: packet_count}` |
+| `communication_pairs` | List of active links: `[[sat_a, sat_b], ...]` |
+| `requests` | List of requests: `[[requester, requestee, packet_idx, was_successful], ...]` |
+
+### Analyzing Logs
 
 ```python
-class Satellite:
-    def step(self, timestep: float) -> None
-    def get_position_eci(self) -> np.ndarray      # [x, y, z] in km
-    def get_velocity_eci(self) -> np.ndarray      # [vx, vy, vz] in km/s
-    def get_geospatial_position() -> GeospatialPosition
-    def distance_to(self, other: Satellite) -> float
-    def has_line_of_sight(self, other: Satellite) -> bool
-```
+from simulation import load_simulation_log
 
-### EllipticalOrbit Class
+# Load a saved log
+log = load_simulation_log("simulation_log.json")
 
-```python
-class EllipticalOrbit:
-    # Primary parameters
-    apoapsis: float              # km from Earth center
-    periapsis: float             # km from Earth center
-    inclination: float           # radians
-    longitude_of_ascending_node: float  # RAAN, radians
-    argument_of_periapsis: float        # radians
-    
-    # Derived properties
-    semi_major_axis: float       # km
-    eccentricity: float          # 0 to <1
-    period: float                # seconds
+# Access configuration from header
+print(f"Constellation: {log['header']['constellation_type']}")
+print(f"Satellites: {log['header']['num_satellites']}")
+print(f"Packets: {log['header']['num_packets']}")
+print(f"Agent: {log['header']['agent_type']}")
+
+# Analyze packet distribution over time
+for record in log['time_series']:
+    counts = record['packet_counts']
+    avg = sum(counts.values()) / len(counts)
+    print(f"Step {record['step']}: avg packets = {avg:.1f}")
+
+# Calculate request success rate
+total_requests = sum(len(r['requests']) for r in log['time_series'])
+successful = sum(
+    sum(1 for req in r['requests'] if req[3])  # req[3] is was_successful
+    for r in log['time_series']
+)
+if total_requests > 0:
+    print(f"Request success rate: {successful/total_requests*100:.1f}%")
+
+# Find when each satellite completed
+for sat_id in log['time_series'][0]['packet_counts'].keys():
+    num_packets = log['header']['num_packets']
+    for record in log['time_series']:
+        if record['packet_counts'][sat_id] == num_packets:
+            print(f"{sat_id} completed at step {record['step']}")
+            break
 ```
 
 ## Extending the Agent Protocol
@@ -370,29 +484,141 @@ register_agent("my_agent", MyAgent)
 
 ### Available Methods from BaseAgent
 
-When subclassing, you have access to these utility methods:
-
-| Method | Description |
-|--------|-------------|
+| Method/Property | Description |
+|-----------------|-------------|
 | `self.packets` | Set of packet indices this agent has |
 | `self.get_missing_packets()` | Returns set of missing packet indices |
 | `self.has_all_packets()` | True if agent has all packets |
-| `self.get_completion_percentage()` | Returns 0-100 completion % |
+| `self.get_completion_percentage()` | Returns 0-100 completion percentage |
+| `self.get_packet_count()` | Returns number of packets held |
 | `self.is_base_station` | True if this is the ground station |
+| `self.num_packets` | Total packets in the update |
+| `self.num_satellites` | Number of satellites in constellation |
 
 ### Protocol Methods
 
 | Method | When Called | Default Behavior |
 |--------|-------------|------------------|
-| `broadcast_state()` | Phase 1 | Returns packets, completion, etc. |
-| `make_requests(broadcasts)` | Phase 2 | Returns `{}` (override this!) |
+| `broadcast_state()` | Phase 1 | Returns dict with packets, completion, etc. |
+| `make_requests(broadcasts)` | Phase 2 | Returns `{}` — override this! |
 | `receive_requests_and_update(requests)` | Phase 3 | Grants all valid requests |
-| `receive_packets_and_update(received)` | Phase 4 | Adds received packets |
+| `receive_packets_and_update(received)` | Phase 4 | Adds received packets to inventory |
 
-## Example: Batch Analysis
+## API Reference
+
+### SimulationConfig
 
 ```python
-from simulation import Simulation, SimulationConfig, ConstellationType
+@dataclass
+class SimulationConfig:
+    constellation_type: ConstellationType  # WALKER_DELTA, WALKER_STAR, RANDOM
+    num_planes: int = 3                    # Orbital planes (Walker)
+    sats_per_plane: int = 4                # Satellites per plane (Walker)
+    num_satellites: int = 12               # Total satellites (random)
+    altitude: float = 550.0                # Orbital altitude (km)
+    inclination: float = 0.925             # Inclination (radians)
+    phasing_parameter: int = 1             # Walker phasing F
+    random_seed: Optional[int] = None      # For reproducibility
+    communication_range: Optional[float] = None  # km, None = unlimited
+    num_packets: int = 100                 # Packets in update
+    agent_class: Optional[Type] = None     # Custom agent class
+    base_station_latitude: float = 0.0     # degrees
+    base_station_longitude: float = 0.0    # degrees
+    base_station_altitude: float = 0.0     # km
+    base_station_range: float = 10000.0    # km
+```
+
+### Simulation Class
+
+```python
+class Simulation:
+    def __init__(config: SimulationConfig, enable_logging: bool = False)
+    def initialize(timestep: float = 60.0) -> None
+    def step(timestep: float) -> SimulationState
+    def run(duration: float, timestep: float) -> List[SimulationState]
+    def reset() -> None
+    def regenerate(new_seed: Optional[int] = None) -> None
+    def is_update_complete() -> bool
+    
+    # Analysis methods
+    def get_inter_satellite_distances() -> Dict[Tuple[str, str], float]
+    def get_line_of_sight_matrix() -> Dict[Tuple[str, str], bool]
+    def get_summary() -> Dict[str, Any]
+    
+    # Logging methods (only work if enable_logging=True)
+    def save_log(filepath: str) -> None
+    def get_log() -> Dict[str, Any]
+    
+    # Properties
+    @property
+    def num_satellites() -> int
+    @property
+    def num_orbits() -> int
+    @property
+    def simulation_time() -> float
+```
+
+### Satellite Class
+
+```python
+class Satellite:
+    satellite_id: str
+    orbit: EllipticalOrbit
+    position: float  # 0-1, position in orbit
+    
+    def step(timestep: float) -> None
+    def get_position_eci() -> np.ndarray      # [x, y, z] in km
+    def get_velocity_eci() -> np.ndarray      # [vx, vy, vz] in km/s
+    def get_geospatial_position(earth_rotation: float = 0) -> GeospatialPosition
+    def get_radius() -> float                 # Distance from Earth center (km)
+    def get_altitude() -> float               # Altitude above surface (km)
+    def get_speed() -> float                  # Orbital velocity (km/s)
+    def distance_to(other: Satellite) -> float
+    def has_line_of_sight(other: Satellite) -> bool
+```
+
+### EllipticalOrbit Class
+
+```python
+class EllipticalOrbit:
+    # Constructor parameters
+    apoapsis: float              # km from Earth center
+    periapsis: float             # km from Earth center
+    inclination: float           # radians (0 to π)
+    longitude_of_ascending_node: float  # RAAN, radians
+    argument_of_periapsis: float        # radians
+    
+    # Derived properties
+    semi_major_axis: float       # km
+    semi_minor_axis: float       # km
+    eccentricity: float          # 0 to <1
+    period: float                # seconds
+    apoapsis_altitude: float     # km above surface
+    periapsis_altitude: float    # km above surface
+    
+    # Methods
+    def position_eci(true_anomaly: float) -> np.ndarray
+    def velocity_eci(true_anomaly: float) -> np.ndarray
+    def radius_at_true_anomaly(nu: float) -> float
+    def velocity_at_radius(r: float) -> float
+```
+
+### Logging Functions
+
+```python
+from simulation import load_simulation_log
+
+# Load a saved log file
+log = load_simulation_log("simulation_log.json")
+# Returns: {"header": {...}, "time_series": [...]}
+```
+
+## Examples
+
+### Batch Analysis with Logging
+
+```python
+from simulation import Simulation, SimulationConfig, ConstellationType, load_simulation_log
 import math
 
 results = []
@@ -407,33 +633,71 @@ for num_planes in [3, 4, 6, 8]:
         random_seed=42,
     )
     
-    sim = Simulation(config)
-    sim.initialize()
+    sim = Simulation(config, enable_logging=True)
+    sim.initialize(timestep=60.0)
     
-    steps = 0
-    while not sim.is_update_complete() and steps < 1000:
+    while not sim.is_update_complete():
         sim.step(60)
-        steps += 1
+    
+    log_path = f"sim_{num_planes}planes.json"
+    sim.save_log(log_path)
     
     results.append({
         'planes': num_planes,
         'satellites': sim.num_satellites,
         'time_to_complete': sim.simulation_time,
-        'steps': steps,
+        'log_path': log_path,
     })
 
+# Print summary
 for r in results:
     print(f"{r['planes']} planes, {r['satellites']} sats: "
-          f"{r['time_to_complete']/60:.0f} min ({r['steps']} steps)")
+          f"{r['time_to_complete']/60:.0f} min")
+
+# Analyze request patterns
+for r in results:
+    log = load_simulation_log(r['log_path'])
+    total_requests = sum(len(s['requests']) for s in log['time_series'])
+    print(f"{r['planes']} planes: {total_requests} total requests")
+```
+
+### Agent Comparison
+
+```python
+from simulation import Simulation, SimulationConfig, ConstellationType
+from agents import get_agent_class
+import math
+
+config_base = SimulationConfig(
+    constellation_type=ConstellationType.WALKER_DELTA,
+    num_planes=3,
+    sats_per_plane=4,
+    num_packets=50,
+    random_seed=42,
+)
+
+for agent_name in ["base", "min"]:
+    config = SimulationConfig(
+        **{k: v for k, v in config_base.__dict__.items() if k != 'agent_class'},
+        agent_class=get_agent_class(agent_name),
+    )
+    
+    sim = Simulation(config)
+    sim.initialize()
+    
+    for _ in range(50):
+        sim.step(60)
+    
+    stats = sim.state.agent_statistics
+    print(f"{agent_name}: {stats.average_completion:.1f}% avg completion")
 ```
 
 ## Units
 
-- **Distance**: kilometers (km)
-- **Angles**: radians (internal), degrees (CLI)
-- **Time**: seconds
-- **Velocity**: km/s
-
-## License
-
-MIT License
+| Quantity | Unit |
+|----------|------|
+| Distance | kilometers (km) |
+| Angles | radians (internal), degrees (CLI) |
+| Time | seconds |
+| Velocity | km/s |
+| Mass | kg |

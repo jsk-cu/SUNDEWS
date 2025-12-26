@@ -4,7 +4,7 @@ Simulation Module
 
 Main simulation class for satellite constellation software update distribution.
 Provides a unified interface for running simulations with integrated agent-based
-packet distribution protocol.
+packet distribution protocol and optional logging.
 
 The simulation can run independently of visualization for batch processing,
 testing, or analysis.
@@ -23,6 +23,7 @@ from .constellation import (
     create_walker_star_constellation,
 )
 from .base_station import BaseStation, BaseStationConfig
+from .logging import SimulationLogger, create_logger_from_simulation
 
 
 class ConstellationType(Enum):
@@ -38,49 +39,6 @@ class ConstellationType(Enum):
 class SimulationConfig:
     """
     Configuration for a simulation.
-
-    Attributes
-    ----------
-    constellation_type : ConstellationType
-        Type of constellation to generate.
-    num_planes : int
-        Number of orbital planes (Walker constellations).
-    sats_per_plane : int
-        Satellites per plane (Walker constellations).
-    num_satellites : int
-        Total satellites (random constellations).
-    altitude : float
-        Orbital altitude (km).
-    inclination : float
-        Orbital inclination (radians).
-    phasing_parameter : int
-        Walker phasing parameter F.
-    min_periapsis_altitude : float
-        Minimum periapsis for random orbits (km).
-    max_periapsis_altitude : float
-        Maximum periapsis for random orbits (km).
-    max_apoapsis_altitude : float
-        Maximum apoapsis for random orbits (km).
-    earth_radius : float
-        Earth radius (km).
-    earth_mass : float
-        Earth mass (kg).
-    random_seed : int, optional
-        Random seed for reproducibility.
-    communication_range : float, optional
-        Maximum inter-satellite communication range (km). None = unlimited.
-    num_packets : int
-        Number of packets in the software update.
-    agent_class : type, optional
-        Custom agent class. Uses default Agent if None.
-    base_station_latitude : float
-        Base station latitude (degrees).
-    base_station_longitude : float
-        Base station longitude (degrees).
-    base_station_altitude : float
-        Base station altitude above sea level (km).
-    base_station_range : float
-        Base station communication range (km).
     """
 
     constellation_type: ConstellationType = ConstellationType.WALKER_DELTA
@@ -109,19 +67,6 @@ class SimulationConfig:
 class AgentStatistics:
     """
     Statistics about agent packet distribution.
-
-    Attributes
-    ----------
-    total_packets : int
-        Total packets in the update.
-    packets_per_agent : dict
-        Packet count per agent (agent_id -> count).
-    completion_percentage : dict
-        Completion percentage per agent (agent_id -> percentage).
-    fully_updated_count : int
-        Number of agents with all packets.
-    average_completion : float
-        Average completion across satellite agents.
     """
 
     total_packets: int = 0
@@ -135,21 +80,6 @@ class AgentStatistics:
 class SimulationState:
     """
     Current simulation state.
-
-    Attributes
-    ----------
-    time : float
-        Current simulation time (seconds).
-    step_count : int
-        Number of simulation steps executed.
-    satellite_positions : dict
-        Current satellite positions (satellite_id -> GeospatialPosition).
-    active_links : set
-        Active inter-satellite communication links as (sat1_id, sat2_id) tuples.
-    base_station_links : set
-        Active base station links as (base_name, sat_id) tuples.
-    agent_statistics : AgentStatistics
-        Packet distribution statistics.
     """
 
     time: float = 0.0
@@ -171,6 +101,8 @@ class Simulation:
     ----------
     config : SimulationConfig, optional
         Simulation configuration.
+    enable_logging : bool
+        Whether to enable simulation logging (default True).
 
     Attributes
     ----------
@@ -186,6 +118,8 @@ class Simulation:
         Current simulation state.
     agents : dict
         Agent instances (agent_id -> Agent).
+    logger : SimulationLogger
+        Logger for capturing simulation events.
     """
 
     # Earth's sidereal rotation rate (rad/s)
@@ -194,7 +128,11 @@ class Simulation:
     # Base station agent ID
     BASE_STATION_AGENT_ID = 0
 
-    def __init__(self, config: Optional[SimulationConfig] = None):
+    def __init__(
+        self,
+        config: Optional[SimulationConfig] = None,
+        enable_logging: bool = False
+    ):
         self.config = config or SimulationConfig()
         self.orbits: List[EllipticalOrbit] = []
         self.satellites: List[Satellite] = []
@@ -208,14 +146,23 @@ class Simulation:
         self.agent_id_to_satellite_id: Dict[int, str] = {}
         self.base_station_agent_id = self.BASE_STATION_AGENT_ID
 
+        # Logging
+        self.logger = SimulationLogger(enabled=enable_logging)
+        self._timestep: float = 60.0  # Default timestep for logging header
+
         self._initialized = False
 
-    def initialize(self) -> None:
+    def initialize(self, timestep: float = 60.0) -> None:
         """
         Initialize simulation by creating constellation, base stations, and agents.
 
-        Must be called before stepping the simulation.
+        Parameters
+        ----------
+        timestep : float
+            The timestep that will be used for simulation steps.
+            Used for logging header metadata.
         """
+        self._timestep = timestep
         self._create_constellation()
         self._create_base_stations()
         self._create_agents()
@@ -223,6 +170,24 @@ class Simulation:
         self._update_active_links()
         self._update_base_station_links()
         self._update_agent_statistics()
+        
+        # Initialize logging
+        if self.logger.enabled:
+            agent_type = "unknown"
+            if self.config.agent_class is not None:
+                agent_type = getattr(self.config.agent_class, 'name', 'custom')
+            else:
+                agent_type = "min"  # default agent
+            
+            self.logger.set_header_from_config(
+                self.config,
+                agent_type=agent_type,
+                timestep=timestep
+            )
+            
+            # Record initial state (step 0, before any simulation)
+            self._record_timestep_log()
+        
         self._initialized = True
 
     def _create_constellation(self) -> None:
@@ -347,15 +312,23 @@ class Simulation:
 
         return neighbors
 
-    def _run_agent_protocol(self) -> None:
+    def _agent_id_to_entity_id(self, agent_id: int) -> str:
+        """Convert agent ID to entity ID (satellite ID or base station name)."""
+        if agent_id == self.BASE_STATION_AGENT_ID:
+            return self.base_stations[0].name if self.base_stations else "BASE-1"
+        return self.agent_id_to_satellite_id.get(agent_id, f"AGENT-{agent_id}")
+
+    def _run_agent_protocol(self) -> List[Tuple[str, str, int, bool]]:
         """
         Execute the 4-phase agent communication protocol.
 
-        Phase 1: Broadcast state
-        Phase 2: Make requests
-        Phase 3: Respond to requests
-        Phase 4: Receive packets
+        Returns
+        -------
+        List[Tuple[str, str, int, bool]]
+            List of request records: (requester_id, requestee_id, packet_idx, successful)
         """
+        request_records: List[Tuple[str, str, int, bool]] = []
+
         # Phase 1: Broadcast
         broadcasts: Dict[int, Any] = {}
         for agent_id, agent in self.agents.items():
@@ -387,7 +360,7 @@ class Simulation:
                 requests_to_agent[agent_id]
             )
 
-        # Phase 4: Receive
+        # Phase 4: Receive and record requests
         packets_to_agent: Dict[int, Dict[int, Optional[int]]] = {
             agent_id: {} for agent_id in self.agents
         }
@@ -396,9 +369,22 @@ class Simulation:
                 if requestee_id in responses:
                     sent_packet = responses[requestee_id].get(requester_id)
                     packets_to_agent[requester_id][requestee_id] = sent_packet
+                    
+                    # Record the request
+                    requester_entity = self._agent_id_to_entity_id(requester_id)
+                    requestee_entity = self._agent_id_to_entity_id(requestee_id)
+                    was_successful = sent_packet is not None
+                    request_records.append((
+                        requester_entity,
+                        requestee_entity,
+                        requested_packet,
+                        was_successful
+                    ))
 
         for agent_id, agent in self.agents.items():
             agent.receive_packets_and_update(packets_to_agent[agent_id])
+
+        return request_records
 
     def _update_state(self) -> None:
         """Update satellite positions in state."""
@@ -476,6 +462,36 @@ class Simulation:
 
         self.state.agent_statistics = stats
 
+    def _record_timestep_log(self, request_records: Optional[List[Tuple[str, str, int, bool]]] = None) -> None:
+        """Record the current timestep to the log."""
+        if not self.logger.enabled:
+            return
+        
+        # Start timestep record
+        self.logger.start_timestep(
+            step=self.state.step_count,
+            time=self.state.time
+        )
+        
+        # Record packet counts for satellites only
+        packet_counts = {}
+        for satellite in self.satellites:
+            agent_id = self.satellite_id_to_agent_id.get(satellite.satellite_id)
+            if agent_id is not None and agent_id in self.agents:
+                packet_counts[satellite.satellite_id] = self.agents[agent_id].get_packet_count()
+        
+        self.logger.record_packet_counts(packet_counts)
+        
+        # Record communication pairs (inter-satellite links only)
+        self.logger.record_communication_pairs_from_set(self.state.active_links)
+        
+        # Record requests if provided
+        if request_records:
+            self.logger.record_requests_batch(request_records)
+        
+        # Finalize timestep
+        self.logger.end_timestep()
+
     def step(self, timestep: float) -> SimulationState:
         """
         Advance simulation by one timestep.
@@ -507,8 +523,14 @@ class Simulation:
         self._update_state()
         self._update_active_links()
         self._update_base_station_links()
-        self._run_agent_protocol()
+        
+        # Run agent protocol and capture request records
+        request_records = self._run_agent_protocol()
+        
         self._update_agent_statistics()
+        
+        # Record to log
+        self._record_timestep_log(request_records)
 
         return self.state
 
@@ -529,7 +551,7 @@ class Simulation:
             List of states at each timestep.
         """
         if not self._initialized:
-            self.initialize()
+            self.initialize(timestep=timestep)
 
         states = []
         elapsed = 0.0
@@ -563,6 +585,7 @@ class Simulation:
     def reset(self) -> None:
         """Reset simulation to initial state."""
         self.state = SimulationState()
+        self.logger.reset()
         self._create_constellation()
         self._create_base_stations()
         self._create_agents()
@@ -574,17 +597,11 @@ class Simulation:
     def regenerate(self, new_seed: Optional[int] = None) -> None:
         """
         Regenerate constellation with new random seed.
-
-        Parameters
-        ----------
-        new_seed : int, optional
-            New seed. Uses random seed if None.
         """
         if new_seed is not None:
             self.config.random_seed = new_seed
         else:
             import random
-
             self.config.random_seed = random.randint(0, 2**31)
 
         self.reset()
@@ -592,16 +609,7 @@ class Simulation:
     def set_custom_constellation(
         self, orbits: List[EllipticalOrbit], satellites: List[Satellite]
     ) -> None:
-        """
-        Set a custom constellation.
-
-        Parameters
-        ----------
-        orbits : list
-            Orbital elements.
-        satellites : list
-            Satellite instances.
-        """
+        """Set a custom constellation."""
         self.config.constellation_type = ConstellationType.CUSTOM
         self.orbits = orbits
         self.satellites = satellites
@@ -637,14 +645,7 @@ class Simulation:
         return self.agents.get(self.BASE_STATION_AGENT_ID)
 
     def get_inter_satellite_distances(self) -> Dict[Tuple[str, str], float]:
-        """
-        Calculate distances between all satellite pairs.
-
-        Returns
-        -------
-        dict
-            (sat1_id, sat2_id) -> distance in km.
-        """
+        """Calculate distances between all satellite pairs."""
         distances = {}
         n = len(self.satellites)
 
@@ -659,14 +660,7 @@ class Simulation:
         return distances
 
     def get_line_of_sight_matrix(self) -> Dict[Tuple[str, str], bool]:
-        """
-        Calculate line-of-sight status for all satellite pairs.
-
-        Returns
-        -------
-        dict
-            (sat1_id, sat2_id) -> has_los.
-        """
+        """Calculate line-of-sight status for all satellite pairs."""
         los_matrix = {}
         n = len(self.satellites)
 
@@ -683,6 +677,30 @@ class Simulation:
     def is_update_complete(self) -> bool:
         """Check if all satellites have received all packets."""
         return self.state.agent_statistics.fully_updated_count == len(self.satellites)
+
+    def save_log(self, filepath: str, indent: int = 2) -> None:
+        """
+        Save the simulation log to a JSON file.
+        
+        Parameters
+        ----------
+        filepath : str
+            Path to output file
+        indent : int
+            JSON indentation level
+        """
+        self.logger.save(filepath, indent=indent)
+
+    def get_log(self) -> Dict[str, Any]:
+        """
+        Get the simulation log as a dictionary.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Log with 'header' and 'time_series' keys
+        """
+        return self.logger.get_log()
 
     @property
     def num_satellites(self) -> int:
@@ -733,18 +751,6 @@ class Simulation:
 def create_simulation(constellation_type: str = "walker_delta", **kwargs) -> Simulation:
     """
     Create simulation with specified constellation type.
-
-    Parameters
-    ----------
-    constellation_type : str
-        One of "random", "walker_delta", "walker_star".
-    **kwargs
-        Additional configuration parameters.
-
-    Returns
-    -------
-    Simulation
-        Configured simulation (not yet initialized).
     """
     type_map = {
         "random": ConstellationType.RANDOM,
@@ -765,7 +771,7 @@ def create_simulation(constellation_type: str = "walker_delta", **kwargs) -> Sim
 
 
 if __name__ == "__main__":
-    print("Simulation Demo with Agents")
+    print("Simulation Demo with Logging")
     print("=" * 60)
 
     config = SimulationConfig(
@@ -777,8 +783,8 @@ if __name__ == "__main__":
         num_packets=50,
     )
 
-    sim = Simulation(config)
-    sim.initialize()
+    sim = Simulation(config, enable_logging=True)
+    sim.initialize(timestep=60.0)
 
     print(f"\nCreated simulation: {sim}")
 
@@ -790,3 +796,8 @@ if __name__ == "__main__":
     print(f"\nAfter 10 minutes:")
     print(f"  Average completion: {stats.average_completion:.1f}%")
     print(f"  Fully updated: {stats.fully_updated_count}/{len(sim.satellites)}")
+    print(f"  Log timesteps: {sim.logger.num_timesteps}")
+    
+    # Save log
+    sim.save_log("/tmp/simulation_log.json")
+    print(f"\nLog saved to /tmp/simulation_log.json")
