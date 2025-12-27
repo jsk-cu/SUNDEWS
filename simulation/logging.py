@@ -12,14 +12,15 @@ The log format consists of:
 Each timestep record contains:
 1. packet_counts: {satellite_id: num_packets} for all satellites
 2. communication_pairs: [(sat_a, sat_b), ...] active links
-3. requests: [(requester, requestee, packet_idx, was_successful), ...]
+3. requests: [(requester, requestee, packet_requested, packet_received), ...]
+   where packet_received is the actual packet index transferred (or null if denied)
 """
 
 import json
 import math
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Any, Set
+from typing import Dict, List, Tuple, Optional, Any, Set, Union
 from pathlib import Path
 
 
@@ -27,33 +28,39 @@ from pathlib import Path
 class RequestRecord:
     """
     Record of a single packet request.
-    
+
     Attributes
     ----------
     requester_id : str
         ID of the agent/satellite making the request
     requestee_id : str
         ID of the agent/satellite being asked
-    packet_idx : int
+    packet_requested : int
         Index of the packet being requested
-    was_successful : bool
-        Whether the request was fulfilled
+    packet_received : Optional[int]
+        Index of the packet actually received (None if request denied)
     """
+
     requester_id: str
     requestee_id: str
-    packet_idx: int
-    was_successful: bool
-    
-    def to_tuple(self) -> Tuple[str, str, int, bool]:
+    packet_requested: int
+    packet_received: Optional[int]
+
+    def to_tuple(self) -> Tuple[str, str, int, Optional[int]]:
         """Convert to tuple format for JSON serialization."""
-        return (self.requester_id, self.requestee_id, self.packet_idx, self.was_successful)
+        return (
+            self.requester_id,
+            self.requestee_id,
+            self.packet_requested,
+            self.packet_received,
+        )
 
 
 @dataclass
 class TimestepRecord:
     """
     Record of simulation state at a single timestep.
-    
+
     Attributes
     ----------
     step : int
@@ -64,15 +71,16 @@ class TimestepRecord:
         Packet count per satellite {satellite_id: num_packets}
     communication_pairs : List[Tuple[str, str]]
         Active inter-satellite links [(sat_a, sat_b), ...]
-    requests : List[Tuple[str, str, int, bool]]
-        Request records [(requester, requestee, packet_idx, success), ...]
+    requests : List[Tuple[str, str, int, Optional[int]]]
+        Request records [(requester, requestee, packet_requested, packet_received), ...]
     """
+
     step: int
     time: float
     packet_counts: Dict[str, int] = field(default_factory=dict)
     communication_pairs: List[Tuple[str, str]] = field(default_factory=list)
-    requests: List[Tuple[str, str, int, bool]] = field(default_factory=list)
-    
+    requests: List[Tuple[str, str, int, Optional[int]]] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -80,7 +88,7 @@ class TimestepRecord:
             "time": self.time,
             "packet_counts": self.packet_counts,
             "communication_pairs": self.communication_pairs,
-            "requests": self.requests
+            "requests": self.requests,
         }
 
 
@@ -88,7 +96,7 @@ class TimestepRecord:
 class SimulationLogHeader:
     """
     Header containing all information needed to reproduce a simulation.
-    
+
     Attributes
     ----------
     constellation_type : str
@@ -132,6 +140,7 @@ class SimulationLogHeader:
     version : str
         Log format version
     """
+
     constellation_type: str
     num_planes: int
     sats_per_plane: int
@@ -151,8 +160,8 @@ class SimulationLogHeader:
     earth_radius: float
     earth_mass: float
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    version: str = "1.0"
-    
+    version: str = "1.1"  # Updated version for new request format
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
@@ -161,15 +170,19 @@ class SimulationLogHeader:
 class SimulationLogger:
     """
     Logger for capturing simulation state and events.
-    
+
     Captures packet distribution state, communication topology, and
     request/response events at each timestep for later analysis.
-    
+
+    The request format captures both the requested packet and the
+    actually transferred packet, enabling demand analysis:
+    (requester_id, requestee_id, packet_requested, packet_received)
+
     Parameters
     ----------
     enabled : bool
         Whether logging is enabled (default True)
-    
+
     Attributes
     ----------
     header : SimulationLogHeader
@@ -178,34 +191,35 @@ class SimulationLogger:
         Recorded timestep data
     enabled : bool
         Whether logging is active
-    
+
     Example
     -------
     >>> logger = SimulationLogger()
-    >>> logger.set_header_from_config(config, agent_type="min")
-    >>> 
+    >>> logger.set_header_from_config(config, agent_type="rarity")
+    >>>
     >>> # During simulation step:
     >>> logger.start_timestep(step=0, time=0.0)
     >>> logger.record_packet_counts({"SAT-1": 5, "SAT-2": 10})
     >>> logger.record_communication_pairs([("SAT-1", "SAT-2")])
-    >>> logger.record_request("SAT-1", "SAT-2", packet_idx=3, successful=True)
+    >>> logger.record_request("SAT-1", "SAT-2", packet_requested=3, packet_received=3)
+    >>> logger.record_request("SAT-3", "SAT-4", packet_requested=5, packet_received=None)
     >>> logger.end_timestep()
-    >>> 
+    >>>
     >>> # Export
     >>> logger.save("simulation_log.json")
     """
-    
+
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
         self.header: Optional[SimulationLogHeader] = None
         self.time_series: List[TimestepRecord] = []
         self._current_record: Optional[TimestepRecord] = None
-        self._pending_requests: List[Tuple[str, str, int, bool]] = []
-    
+        self._pending_requests: List[Tuple[str, str, int, Optional[int]]] = []
+
     def set_header(self, header: SimulationLogHeader) -> None:
         """
         Set the log header directly.
-        
+
         Parameters
         ----------
         header : SimulationLogHeader
@@ -214,16 +228,13 @@ class SimulationLogger:
         if not self.enabled:
             return
         self.header = header
-    
+
     def set_header_from_config(
-        self,
-        config: Any,
-        agent_type: str = "unknown",
-        timestep: float = 60.0
+        self, config: Any, agent_type: str = "unknown", timestep: float = 60.0
     ) -> None:
         """
         Create and set header from a SimulationConfig object.
-        
+
         Parameters
         ----------
         config : SimulationConfig
@@ -235,7 +246,7 @@ class SimulationLogger:
         """
         if not self.enabled:
             return
-        
+
         self.header = SimulationLogHeader(
             constellation_type=config.constellation_type.value,
             num_planes=config.num_planes,
@@ -256,11 +267,11 @@ class SimulationLogger:
             earth_radius=config.earth_radius,
             earth_mass=config.earth_mass,
         )
-    
+
     def start_timestep(self, step: int, time: float) -> None:
         """
         Begin recording a new timestep.
-        
+
         Parameters
         ----------
         step : int
@@ -270,14 +281,14 @@ class SimulationLogger:
         """
         if not self.enabled:
             return
-        
+
         self._current_record = TimestepRecord(step=step, time=time)
         self._pending_requests = []
-    
+
     def record_packet_counts(self, counts: Dict[str, int]) -> None:
         """
         Record packet counts for all satellites.
-        
+
         Parameters
         ----------
         counts : Dict[str, int]
@@ -285,13 +296,13 @@ class SimulationLogger:
         """
         if not self.enabled or self._current_record is None:
             return
-        
+
         self._current_record.packet_counts = dict(counts)
-    
+
     def record_communication_pairs(self, pairs: List[Tuple[str, str]]) -> None:
         """
         Record active inter-satellite communication links.
-        
+
         Parameters
         ----------
         pairs : List[Tuple[str, str]]
@@ -299,13 +310,13 @@ class SimulationLogger:
         """
         if not self.enabled or self._current_record is None:
             return
-        
+
         self._current_record.communication_pairs = list(pairs)
-    
+
     def record_communication_pairs_from_set(self, pairs: Set[Tuple[str, str]]) -> None:
         """
         Record active inter-satellite communication links from a set.
-        
+
         Parameters
         ----------
         pairs : Set[Tuple[str, str]]
@@ -313,76 +324,76 @@ class SimulationLogger:
         """
         if not self.enabled or self._current_record is None:
             return
-        
+
         # Sort for deterministic output
         sorted_pairs = sorted(pairs, key=lambda x: (x[0], x[1]))
         self._current_record.communication_pairs = sorted_pairs
-    
+
     def record_request(
         self,
         requester_id: str,
         requestee_id: str,
-        packet_idx: int,
-        successful: bool
+        packet_requested: int,
+        packet_received: Optional[int],
     ) -> None:
         """
-        Record a single packet request.
-        
+        Record a single packet request with transfer result.
+
         Parameters
         ----------
         requester_id : str
             ID of the requesting satellite/agent
         requestee_id : str
             ID of the satellite/agent being asked
-        packet_idx : int
+        packet_requested : int
             Index of the packet requested
-        successful : bool
-            Whether the request was fulfilled
+        packet_received : Optional[int]
+            Index of the packet actually received (None if request denied)
         """
         if not self.enabled:
             return
-        
-        self._pending_requests.append((requester_id, requestee_id, packet_idx, successful))
-    
+
+        self._pending_requests.append(
+            (requester_id, requestee_id, packet_requested, packet_received)
+        )
+
     def record_requests_batch(
-        self,
-        requests: List[Tuple[str, str, int, bool]]
+        self, requests: List[Tuple[str, str, int, Optional[int]]]
     ) -> None:
         """
         Record multiple requests at once.
-        
+
         Parameters
         ----------
-        requests : List[Tuple[str, str, int, bool]]
-            List of (requester_id, requestee_id, packet_idx, successful) tuples
+        requests : List[Tuple[str, str, int, Optional[int]]]
+            List of (requester_id, requestee_id, packet_requested, packet_received) tuples
         """
         if not self.enabled:
             return
-        
+
         self._pending_requests.extend(requests)
-    
+
     def end_timestep(self) -> None:
         """
         Finalize the current timestep record and add to time series.
         """
         if not self.enabled or self._current_record is None:
             return
-        
+
         # Sort requests for deterministic output
         sorted_requests = sorted(
-            self._pending_requests,
-            key=lambda x: (x[0], x[1], x[2])
+            self._pending_requests, key=lambda x: (x[0], x[1], x[2])
         )
         self._current_record.requests = sorted_requests
-        
+
         self.time_series.append(self._current_record)
         self._current_record = None
         self._pending_requests = []
-    
+
     def get_log(self) -> Dict[str, Any]:
         """
         Get the complete log as a dictionary.
-        
+
         Returns
         -------
         Dict[str, Any]
@@ -390,29 +401,29 @@ class SimulationLogger:
         """
         return {
             "header": self.header.to_dict() if self.header else {},
-            "time_series": [record.to_dict() for record in self.time_series]
+            "time_series": [record.to_dict() for record in self.time_series],
         }
-    
+
     def to_json(self, indent: int = 2) -> str:
         """
         Convert the log to a JSON string.
-        
+
         Parameters
         ----------
         indent : int
             JSON indentation level (default 2)
-        
+
         Returns
         -------
         str
             JSON string representation
         """
         return json.dumps(self.get_log(), indent=indent)
-    
+
     def save(self, filepath: str, indent: int = 2) -> None:
         """
         Save the log to a JSON file.
-        
+
         Parameters
         ----------
         filepath : str
@@ -422,10 +433,10 @@ class SimulationLogger:
         """
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(path, 'w') as f:
+
+        with open(path, "w") as f:
             json.dump(self.get_log(), f, indent=indent)
-    
+
     def reset(self) -> None:
         """
         Clear all recorded data while preserving the header.
@@ -433,19 +444,19 @@ class SimulationLogger:
         self.time_series = []
         self._current_record = None
         self._pending_requests = []
-    
+
     def clear(self) -> None:
         """
         Clear all data including the header.
         """
         self.header = None
         self.reset()
-    
+
     @property
     def num_timesteps(self) -> int:
         """Number of recorded timesteps."""
         return len(self.time_series)
-    
+
     def __repr__(self) -> str:
         header_info = self.header.constellation_type if self.header else "no header"
         return f"SimulationLogger(timesteps={self.num_timesteps}, header={header_info})"
@@ -454,18 +465,24 @@ class SimulationLogger:
 def load_simulation_log(filepath: str) -> Dict[str, Any]:
     """
     Load a simulation log from a JSON file.
-    
+
     Parameters
     ----------
     filepath : str
         Path to the log file
-    
+
     Returns
     -------
     Dict[str, Any]
         Dictionary with 'header' and 'time_series' keys
+
+    Notes
+    -----
+    The request format in time_series is:
+    [(requester_id, requestee_id, packet_requested, packet_received), ...]
+    where packet_received is null/None if the request was denied.
     """
-    with open(filepath, 'r') as f:
+    with open(filepath, "r") as f:
         return json.load(f)
 
 
@@ -473,11 +490,11 @@ def create_logger_from_simulation(
     simulation: Any,
     agent_type: str = "unknown",
     timestep: float = 60.0,
-    enabled: bool = True
+    enabled: bool = True,
 ) -> SimulationLogger:
     """
     Create a logger pre-configured from a Simulation object.
-    
+
     Parameters
     ----------
     simulation : Simulation
@@ -488,7 +505,7 @@ def create_logger_from_simulation(
         Simulation timestep in seconds
     enabled : bool
         Whether logging is enabled
-    
+
     Returns
     -------
     SimulationLogger

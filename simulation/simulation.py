@@ -129,9 +129,7 @@ class Simulation:
     BASE_STATION_AGENT_ID = 0
 
     def __init__(
-        self,
-        config: Optional[SimulationConfig] = None,
-        enable_logging: bool = False
+        self, config: Optional[SimulationConfig] = None, enable_logging: bool = False
     ):
         self.config = config or SimulationConfig()
         self.orbits: List[EllipticalOrbit] = []
@@ -170,24 +168,22 @@ class Simulation:
         self._update_active_links()
         self._update_base_station_links()
         self._update_agent_statistics()
-        
+
         # Initialize logging
         if self.logger.enabled:
             agent_type = "unknown"
             if self.config.agent_class is not None:
-                agent_type = getattr(self.config.agent_class, 'name', 'custom')
+                agent_type = getattr(self.config.agent_class, "name", "custom")
             else:
                 agent_type = "min"  # default agent
-            
+
             self.logger.set_header_from_config(
-                self.config,
-                agent_type=agent_type,
-                timestep=timestep
+                self.config, agent_type=agent_type, timestep=timestep
             )
-            
+
             # Record initial state (step 0, before any simulation)
             self._record_timestep_log()
-        
+
         self._initialized = True
 
     def _create_constellation(self) -> None:
@@ -318,16 +314,17 @@ class Simulation:
             return self.base_stations[0].name if self.base_stations else "BASE-1"
         return self.agent_id_to_satellite_id.get(agent_id, f"AGENT-{agent_id}")
 
-    def _run_agent_protocol(self) -> List[Tuple[str, str, int, bool]]:
+    def _run_agent_protocol(self) -> List[Tuple[str, str, int, Optional[int]]]:
         """
         Execute the 4-phase agent communication protocol.
 
         Returns
         -------
-        List[Tuple[str, str, int, bool]]
-            List of request records: (requester_id, requestee_id, packet_idx, successful)
+        List[Tuple[str, str, int, Optional[int]]]
+            List of request records: (requester_id, requestee_id, packet_requested, packet_received)
+            where packet_received is None if the request was denied
         """
-        request_records: List[Tuple[str, str, int, bool]] = []
+        request_records: List[Tuple[str, str, int, Optional[int]]] = []
 
         # Phase 1: Broadcast
         broadcasts: Dict[int, Any] = {}
@@ -360,7 +357,7 @@ class Simulation:
                 requests_to_agent[agent_id]
             )
 
-        # Phase 4: Receive and record requests
+        # Phase 4: Receive and record requests with actual packet transferred
         packets_to_agent: Dict[int, Dict[int, Optional[int]]] = {
             agent_id: {} for agent_id in self.agents
         }
@@ -369,17 +366,18 @@ class Simulation:
                 if requestee_id in responses:
                     sent_packet = responses[requestee_id].get(requester_id)
                     packets_to_agent[requester_id][requestee_id] = sent_packet
-                    
-                    # Record the request
+
+                    # Record the request with actual packet transferred
                     requester_entity = self._agent_id_to_entity_id(requester_id)
                     requestee_entity = self._agent_id_to_entity_id(requestee_id)
-                    was_successful = sent_packet is not None
-                    request_records.append((
-                        requester_entity,
-                        requestee_entity,
-                        requested_packet,
-                        was_successful
-                    ))
+                    request_records.append(
+                        (
+                            requester_entity,
+                            requestee_entity,
+                            requested_packet,
+                            sent_packet,  # This is now Optional[int] instead of bool
+                        )
+                    )
 
         for agent_id, agent in self.agents.items():
             agent.receive_packets_and_update(packets_to_agent[agent_id])
@@ -462,33 +460,34 @@ class Simulation:
 
         self.state.agent_statistics = stats
 
-    def _record_timestep_log(self, request_records: Optional[List[Tuple[str, str, int, bool]]] = None) -> None:
+    def _record_timestep_log(
+        self, request_records: Optional[List[Tuple[str, str, int, Optional[int]]]] = None
+    ) -> None:
         """Record the current timestep to the log."""
         if not self.logger.enabled:
             return
-        
+
         # Start timestep record
-        self.logger.start_timestep(
-            step=self.state.step_count,
-            time=self.state.time
-        )
-        
+        self.logger.start_timestep(step=self.state.step_count, time=self.state.time)
+
         # Record packet counts for satellites only
         packet_counts = {}
         for satellite in self.satellites:
             agent_id = self.satellite_id_to_agent_id.get(satellite.satellite_id)
             if agent_id is not None and agent_id in self.agents:
-                packet_counts[satellite.satellite_id] = self.agents[agent_id].get_packet_count()
-        
+                packet_counts[satellite.satellite_id] = self.agents[
+                    agent_id
+                ].get_packet_count()
+
         self.logger.record_packet_counts(packet_counts)
-        
+
         # Record communication pairs (inter-satellite links only)
         self.logger.record_communication_pairs_from_set(self.state.active_links)
-        
+
         # Record requests if provided
         if request_records:
             self.logger.record_requests_batch(request_records)
-        
+
         # Finalize timestep
         self.logger.end_timestep()
 
@@ -523,12 +522,12 @@ class Simulation:
         self._update_state()
         self._update_active_links()
         self._update_base_station_links()
-        
+
         # Run agent protocol and capture request records
         request_records = self._run_agent_protocol()
-        
+
         self._update_agent_statistics()
-        
+
         # Record to log
         self._record_timestep_log(request_records)
 
@@ -602,6 +601,7 @@ class Simulation:
             self.config.random_seed = new_seed
         else:
             import random
+
             self.config.random_seed = random.randint(0, 2**31)
 
         self.reset()
@@ -681,7 +681,7 @@ class Simulation:
     def save_log(self, filepath: str, indent: int = 2) -> None:
         """
         Save the simulation log to a JSON file.
-        
+
         Parameters
         ----------
         filepath : str
@@ -694,7 +694,7 @@ class Simulation:
     def get_log(self) -> Dict[str, Any]:
         """
         Get the simulation log as a dictionary.
-        
+
         Returns
         -------
         Dict[str, Any]
@@ -797,7 +797,7 @@ if __name__ == "__main__":
     print(f"  Average completion: {stats.average_completion:.1f}%")
     print(f"  Fully updated: {stats.fully_updated_count}/{len(sim.satellites)}")
     print(f"  Log timesteps: {sim.logger.num_timesteps}")
-    
+
     # Save log
     sim.save_log("/tmp/simulation_log.json")
     print(f"\nLog saved to /tmp/simulation_log.json")

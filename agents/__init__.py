@@ -3,77 +3,77 @@
 Agents Package
 
 Provides agent implementations for the packet distribution protocol.
-Each agent defines a strategy for requesting and distributing packets
-during satellite software updates.
+Each agent implements a strategy for deciding which packets to request
+from neighbors during the 4-phase communication protocol.
 
-Class Hierarchy
----------------
-BaseAgent (base class)
-    The abstract base class that all agents should subclass.
-    Provides the 4-phase protocol interface and default implementations.
-    The default make_requests() returns {} (no requests), useful as control.
-
-MinAgent(BaseAgent)
-    Example subclass that overrides make_requests().
-    Orders neighbors by completion (lowest first), requests lowest packets.
-
-Creating Custom Agents
-----------------------
-To create a custom agent, subclass BaseAgent and override make_requests():
-
-    from agents import BaseAgent, register_agent
-
-    class MyAgent(BaseAgent):
-        name = "my_agent"
-        description = "My custom distribution strategy"
-
-        def make_requests(self, neighbor_broadcasts):
-            requests = {}
-            missing = self.get_missing_packets()
-            for neighbor_id, broadcast in neighbor_broadcasts.items():
-                available = missing & broadcast.get("packets", set())
-                if available:
-                    requests[neighbor_id] = min(available)
-                    missing.discard(requests[neighbor_id])
-            return requests
-
-    # Register so it can be used via --agent-controller my_agent
-    register_agent("my_agent", MyAgent)
+Available Agents
+----------------
+base : BaseAgent
+    Dummy agent that makes no requests (control case)
+min : MinAgent
+    Orders neighbors by completion, requests lowest-indexed missing packets
+random : RandomAgent
+    Requests random useful packets from each neighbor (baseline)
+rarity : RarityAgent
+    Requests rarest packets first (BitTorrent-style)
+demand : DemandAgent
+    Tracks packet demand, prioritizes bottleneck packets
+rank : RankAgent
+    Uses 2-hop awareness to prioritize rare packets (RLNC-inspired)
 
 Usage
 -----
-    from agents import get_agent_class, list_agents, BaseAgent
-
-    # Get agent class by name
-    AgentClass = get_agent_class("min")
-
-    # Create agent instance
+    from agents import get_agent_class, list_agents
+    
+    # Get a specific agent class
+    AgentClass = get_agent_class("rarity")
+    
+    # Create an agent
     agent = AgentClass(
         agent_id=1,
         num_packets=100,
-        num_satellites=12,
+        num_satellites=24,
         is_base_station=False
     )
-
-    # List available agents
-    for name, desc in list_agents().items():
-        print(f"{name}: {desc}")
+    
+    # List all available agents
+    for name, description in list_agents():
+        print(f"{name}: {description}")
 """
 
-from typing import Dict, Type
+from typing import Dict, Type, List, Tuple, Optional
 
 from .base_agent import BaseAgent
 from .min_agent import MinAgent
+from .random_agent import RandomAgent
+from .rarity_agent import RarityAgent
+from .demand_agent import DemandAgent
+from .rank_agent import RankAgent
 
 
-# Registry mapping agent names to classes
-AGENT_REGISTRY: Dict[str, Type[BaseAgent]] = {
+# Registry of available agents
+_AGENT_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "base": BaseAgent,
     "min": MinAgent,
+    "random": RandomAgent,
+    "rarity": RarityAgent,
+    "demand": DemandAgent,
+    "rank": RankAgent,
 }
 
-# Default agent to use if none specified
-DEFAULT_AGENT = "min"
+
+def register_agent(name: str, agent_class: Type[BaseAgent]) -> None:
+    """
+    Register a new agent class.
+
+    Parameters
+    ----------
+    name : str
+        Name to register the agent under
+    agent_class : Type[BaseAgent]
+        The agent class to register
+    """
+    _AGENT_REGISTRY[name] = agent_class
 
 
 def get_agent_class(name: str) -> Type[BaseAgent]:
@@ -83,82 +83,72 @@ def get_agent_class(name: str) -> Type[BaseAgent]:
     Parameters
     ----------
     name : str
-        Agent name (e.g., "base", "min").
+        Name of the agent
 
     Returns
     -------
     Type[BaseAgent]
-        The agent class (a subclass of BaseAgent).
+        The agent class
 
     Raises
     ------
     ValueError
-        If agent name is not found in registry.
+        If agent name is not found in registry
     """
-    if name not in AGENT_REGISTRY:
-        available = ", ".join(AGENT_REGISTRY.keys())
+    if name not in _AGENT_REGISTRY:
+        available = ", ".join(_AGENT_REGISTRY.keys())
         raise ValueError(
-            f"Unknown agent type: '{name}'. Available agents: {available}"
+            f"Unknown agent: '{name}'. Available agents: {available}"
         )
-    return AGENT_REGISTRY[name]
+    return _AGENT_REGISTRY[name]
 
 
-def list_agents() -> Dict[str, str]:
+def list_agents() -> List[Tuple[str, str]]:
     """
     List all available agents with their descriptions.
 
     Returns
     -------
-    dict
-        Mapping of agent names to descriptions.
+    List[Tuple[str, str]]
+        List of (name, description) tuples
     """
-    return {
-        name: cls.description
-        for name, cls in AGENT_REGISTRY.items()
-    }
+    return [
+        (name, cls.description)
+        for name, cls in _AGENT_REGISTRY.items()
+    ]
 
 
-def register_agent(name: str, agent_class: Type[BaseAgent]) -> None:
+def get_agent_names() -> List[str]:
     """
-    Register a new agent type.
+    Get list of all registered agent names.
 
-    The agent class should be a subclass of BaseAgent.
-
-    Parameters
-    ----------
-    name : str
-        Name for the agent (used with --agent-controller).
-    agent_class : Type[BaseAgent]
-        The agent class to register.
-
-    Raises
-    ------
-    TypeError
-        If agent_class is not a subclass of BaseAgent.
+    Returns
+    -------
+    List[str]
+        List of agent names
     """
-    if not issubclass(agent_class, BaseAgent):
-        raise TypeError(
-            f"Agent class must be a subclass of BaseAgent, got {agent_class}"
-        )
-    AGENT_REGISTRY[name] = agent_class
+    return list(_AGENT_REGISTRY.keys())
 
 
-# For backwards compatibility, also export Agent as alias to default
-Agent = AGENT_REGISTRY[DEFAULT_AGENT]
+# Convenience alias
+Agent = MinAgent  # Default agent
 
 
 __all__ = [
-    # Base class for subclassing
+    # Base classes
     "BaseAgent",
-    # Example subclass
-    "MinAgent",
-    # Alias to default agent
     "Agent",
-    # Registry
-    "AGENT_REGISTRY",
-    "DEFAULT_AGENT",
-    # Functions
+    
+    # Agent implementations
+    "MinAgent",
+    "RandomAgent",
+    "RarityAgent",
+    "DemandAgent",
+    "RankAgent",
+    
+    # Registry functions
+    "register_agent",
     "get_agent_class",
     "list_agents",
-    "register_agent",
+    "get_agent_names",
 ]

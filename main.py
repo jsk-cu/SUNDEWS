@@ -131,10 +131,14 @@ Controls (visualization mode):
     parser.add_argument(
         "--agent-controller",
         type=str,
-        choices=["base", "min"],
+        choices=["base", "min", "random", "rarity", "demand", "rank"],
         default="min",
         help="Agent controller type: 'base' (dummy, no requests), "
-             "'min' (orders by completion, requests lowest packets) (default: min)",
+             "'min' (default, orders by completion, requests lowest packets), "
+             "'random' (orders by completion, requests random packets), "
+             "'rarity' (requests rarest packets), "
+             "'demand' (requests made, most in-demand packets prioritized), "
+             "'rank' (prioritize packets with fewest alternate sources)",
     )
 
     # -------------------------------------------------------------------------
