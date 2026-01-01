@@ -162,6 +162,8 @@ def sample_satellites():
 @pytest.fixture
 def sample_trajectory_states():
     """Sample trajectory states for testing."""
+    from dataclasses import dataclass
+    
     @dataclass
     class TrajectoryState:
         position_eci: np.ndarray
@@ -203,70 +205,41 @@ def mock_spiceypy():
     """Mock SpiceyPy module for testing without SPICE installation."""
     mock_spice = MagicMock()
     
-    # Mock str2et - convert datetime string to ephemeris time
-    def mock_str2et(time_str):
-        # Simple conversion: seconds since J2000
-        dt = datetime.fromisoformat(time_str.replace("Z", "+00:00").replace("+00:00", ""))
-        j2000 = datetime(2000, 1, 1, 12, 0, 0)
-        return (dt - j2000).total_seconds()
+    # Mock furnsh (load kernel)
+    mock_spice.furnsh = MagicMock()
     
-    # Mock et2utc - convert ephemeris time to datetime string
-    def mock_et2utc(et, format_type, precision):
-        j2000 = datetime(2000, 1, 1, 12, 0, 0)
-        dt = j2000 + timedelta(seconds=et)
-        return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:precision+20]
+    # Mock unload
+    mock_spice.unload = MagicMock()
     
-    # Mock spkezr - get state vector
-    def mock_spkezr(target, et, ref_frame, abcorr, observer):
-        # Return mock state vector based on time
-        angle = et / 5700.0  # Approximate orbit period
-        radius = 6921.0
-        return (
-            [
-                radius * math.cos(angle),
-                radius * math.sin(angle),
-                0.0,
-                -7.6 * math.sin(angle),
-                7.6 * math.cos(angle),
-                0.0
-            ],
-            0.0  # Light time
-        )
+    # Mock kclear (clear all kernels)
+    mock_spice.kclear = MagicMock()
     
-    # Mock spkpos - get position only
-    def mock_spkpos(target, et, ref_frame, abcorr, observer):
-        state, lt = mock_spkezr(target, et, ref_frame, abcorr, observer)
-        return state[:3], lt
+    # Mock str2et (string to ephemeris time)
+    mock_spice.str2et = MagicMock(return_value=0.0)
     
-    # Mock furnsh - load kernel (no-op)
-    def mock_furnsh(kernel_path):
-        pass
+    # Mock spkez (get state vector)
+    def mock_spkez(target, et, frame, abcorr, observer):
+        # Return mock state vector [x, y, z, vx, vy, vz]
+        return [7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], 0.0
+    mock_spice.spkez = MagicMock(side_effect=mock_spkez)
     
-    # Mock kclear - unload kernels (no-op)
-    def mock_kclear():
-        pass
+    # Mock spkpos (get position)
+    def mock_spkpos(target, et, frame, abcorr, observer):
+        return [7000.0, 0.0, 0.0], 0.0
+    mock_spice.spkpos = MagicMock(side_effect=mock_spkpos)
     
-    # Mock spkcov - get coverage
-    def mock_spkcov(spk_file, naif_id):
-        # Return 1 year of coverage
-        j2000_et = 0.0
-        one_year = 365.25 * 86400.0
-        return [j2000_et, j2000_et + one_year]
-    
-    mock_spice.str2et = mock_str2et
-    mock_spice.et2utc = mock_et2utc
-    mock_spice.spkezr = mock_spkezr
-    mock_spice.spkpos = mock_spkpos
-    mock_spice.furnsh = mock_furnsh
-    mock_spice.kclear = mock_kclear
-    mock_spice.spkcov = mock_spkcov
+    # Mock spkcov (get coverage window)
+    mock_window = MagicMock()
+    mock_window.card = MagicMock(return_value=2)
+    mock_spice.spkcov = MagicMock(return_value=mock_window)
+    mock_spice.wnfetd = MagicMock(return_value=(0.0, 86400.0))
     
     return mock_spice
 
 
 @pytest.fixture
 def mock_spice_kernels(tmp_path):
-    """Create mock SPICE kernel files for testing."""
+    """Create mock SPICE kernel files."""
     kernels_dir = tmp_path / "kernels"
     kernels_dir.mkdir()
     
@@ -312,9 +285,9 @@ def spice_config_file(tmp_path, mock_spice_kernels):
 @pytest.fixture
 def mock_ns3_subprocess():
     """Mock subprocess for NS-3 file mode testing."""
+    import json
+    
     def create_mock_result(transfers=None):
-        import json
-        
         if transfers is None:
             transfers = [
                 {
@@ -364,7 +337,6 @@ def mock_ns3_socket():
         
         def sendall(self, data):
             self.sent_data.append(data)
-            # Queue a response
             response = {
                 "status": "success",
                 "transfers": [
@@ -394,7 +366,6 @@ def mock_ns3_socket():
 @pytest.fixture
 def mock_ns3_bindings():
     """Mock NS-3 Python bindings for testing."""
-    # Create mock module structure
     mock_core = MagicMock()
     mock_network = MagicMock()
     mock_internet = MagicMock()
@@ -402,7 +373,6 @@ def mock_ns3_bindings():
     mock_mobility = MagicMock()
     mock_apps = MagicMock()
     
-    # Mock Simulator
     mock_core.Simulator = MagicMock()
     mock_core.Simulator.Stop = MagicMock()
     mock_core.Simulator.Run = MagicMock()
@@ -410,10 +380,8 @@ def mock_ns3_bindings():
     mock_core.Seconds = lambda x: x
     mock_core.Vector = lambda x, y, z: (x, y, z)
     
-    # Mock NodeContainer
     mock_network.NodeContainer = MagicMock
     
-    # Mock helpers
     mock_internet.InternetStackHelper = MagicMock
     mock_p2p.PointToPointHelper = MagicMock
     mock_mobility.MobilityHelper = MagicMock
