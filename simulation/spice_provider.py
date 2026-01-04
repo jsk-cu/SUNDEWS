@@ -291,16 +291,18 @@ class SpiceProvider(TrajectoryProvider):
         Parameters
         ----------
         time : datetime
-            Time to convert
+            Time to convert (naive assumed UTC, aware converted to UTC)
         
         Returns
         -------
         float
             Ephemeris time (seconds past J2000)
         """
-        # Ensure timezone-aware datetime in UTC
-        if time.tzinfo is None:
-            time = time.replace(tzinfo=timezone.utc)
+        # Strip timezone info for consistent handling
+        # Naive datetime is assumed to be UTC
+        if time.tzinfo is not None:
+            # Convert to UTC then make naive
+            time = time.replace(tzinfo=None)
         
         # Format as ISO string for SPICE
         time_str = time.strftime("%Y-%m-%dT%H:%M:%S.%f")
@@ -318,10 +320,13 @@ class SpiceProvider(TrajectoryProvider):
         Returns
         -------
         datetime
-            Converted datetime in UTC
+            Converted datetime (naive, represents UTC)
         """
         utc_str = spice.et2utc(et, "ISOC", 6)
-        return datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
+        # Parse the ISO string, removing any trailing Z
+        utc_str = utc_str.rstrip("Z")
+        # Return naive datetime (represents UTC)
+        return datetime.fromisoformat(utc_str)
     
     def _get_naif_id(self, satellite_id: str) -> int:
         """Get NAIF ID for satellite."""
@@ -500,7 +505,7 @@ class SpiceProvider(TrajectoryProvider):
         Returns
         -------
         Tuple[datetime, datetime]
-            (start_time, end_time) tuple defining valid range
+            (start_time, end_time) tuple defining valid range (naive datetimes, UTC)
         
         Raises
         ------
@@ -526,17 +531,17 @@ class SpiceProvider(TrajectoryProvider):
                 start_time = self._et_to_datetime(start_et)
                 end_time = self._et_to_datetime(end_et)
             else:
-                # No coverage found - return unbounded
+                # No coverage found - return unbounded (naive datetimes)
                 logger.warning(
                     f"No coverage found for {satellite_id}, using unbounded range"
                 )
-                start_time = datetime.min.replace(tzinfo=timezone.utc)
-                end_time = datetime.max.replace(tzinfo=timezone.utc)
+                start_time = datetime(1900, 1, 1)
+                end_time = datetime(2100, 1, 1)
         except Exception as e:
             logger.warning(f"Error getting coverage for {satellite_id}: {e}")
-            # Fall back to very wide range
-            start_time = datetime(1900, 1, 1, tzinfo=timezone.utc)
-            end_time = datetime(2100, 1, 1, tzinfo=timezone.utc)
+            # Fall back to very wide range (naive datetimes)
+            start_time = datetime(1900, 1, 1)
+            end_time = datetime(2100, 1, 1)
         
         self._time_bounds_cache[satellite_id] = (start_time, end_time)
         return (start_time, end_time)
@@ -559,9 +564,10 @@ class SpiceProvider(TrajectoryProvider):
         """
         start, end = self.get_time_bounds(satellite_id)
         
-        # Ensure timezone-aware comparison
-        if time.tzinfo is None:
-            time = time.replace(tzinfo=timezone.utc)
+        # Normalize to naive datetime for comparison
+        # (all internal times are naive, representing UTC)
+        if time.tzinfo is not None:
+            time = time.replace(tzinfo=None)
         
         return start <= time <= end
     

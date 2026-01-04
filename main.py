@@ -12,11 +12,17 @@ Usage:
     python main.py --headless --duration 3600       # Headless simulation
     python main.py --log-loc sim.json               # Enable logging, save to sim.json
     python main.py --help                           # Show all options
+
+Advanced usage with SPICE and NS-3:
+    python main.py --trajectory-provider spice --spice-bsp constellation.bsp --spice-tls naif0012.tls
+    python main.py --network-backend ns3 --ns3-mode socket --ns3-host localhost --ns3-port 5555
+    python main.py --export-spk ./spk_output        # Export constellation to SPK format
 """
 
 import argparse
 import math
 import sys
+from pathlib import Path
 
 
 def main():
@@ -33,6 +39,17 @@ Examples:
   %(prog)s --bs-range 5000 --comm-range 3000  # Custom communication ranges
   %(prog)s --log-loc output.json              # Enable logging, save to output.json
 
+SPICE Ephemeris Examples:
+  %(prog)s --trajectory-provider spice --spice-config config.json
+  %(prog)s --trajectory-provider spice --spice-bsp constellation.bsp --spice-tls naif0012.tls
+  %(prog)s --export-spk ./spk_output          # Export to SPK format
+
+NS-3 Network Simulation Examples:
+  %(prog)s --network-backend ns3 --ns3-mode mock      # Mock NS-3 for testing
+  %(prog)s --network-backend ns3 --ns3-mode file --ns3-path /opt/ns3
+  %(prog)s --network-backend ns3 --ns3-mode socket --ns3-host localhost --ns3-port 5555
+  %(prog)s --network-backend ns3 --ns3-mode bindings  # Direct Python bindings
+
 Controls (visualization mode):
   Arrow keys  : Rotate camera
   +/-         : Zoom in/out
@@ -43,21 +60,22 @@ Controls (visualization mode):
         """,
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Constellation type
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--type",
         "-t",
         type=str,
-        choices=["walker_delta", "walker_star", "random"],
+        choices=["walker_delta", "walker_star", "random", "spice"],
         default="walker_delta",
-        help="Constellation type (default: walker_delta)",
+        help="Constellation type: walker_delta, walker_star, random, or spice "
+             "(spice requires --trajectory-provider spice) (default: walker_delta)",
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Walker constellation parameters
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--planes",
         "-p",
@@ -80,9 +98,9 @@ Controls (visualization mode):
         help="Walker phasing parameter F (default: 1)",
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Random constellation parameters
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--num",
         "-n",
@@ -91,9 +109,9 @@ Controls (visualization mode):
         help="Number of satellites for random constellation (default: 10)",
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Orbital parameters
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--altitude",
         "-a",
@@ -109,9 +127,9 @@ Controls (visualization mode):
         help="Orbital inclination in degrees (default: 53)",
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Communication parameters
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--comm-range",
         type=float,
@@ -125,9 +143,9 @@ Controls (visualization mode):
         help="Number of packets in the software update (default: 100)",
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Agent controller selection
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--agent-controller",
         type=str,
@@ -141,9 +159,9 @@ Controls (visualization mode):
              "'rank' (prioritize packets with fewest alternate sources)",
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Base station parameters
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--bs-latitude",
         type=float,
@@ -169,9 +187,9 @@ Controls (visualization mode):
         help="Base station communication range in km (default: 10000)",
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Simulation control
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--time-scale",
         type=float,
@@ -190,9 +208,9 @@ Controls (visualization mode):
         help="Start with simulation paused",
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Logging
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--log-loc",
         type=str,
@@ -200,9 +218,9 @@ Controls (visualization mode):
         help="Path to save simulation log (enables logging when specified)",
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Headless mode
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--headless",
         action="store_true",
@@ -221,9 +239,9 @@ Controls (visualization mode):
         help="Simulation timestep in seconds for headless mode (default: 60)",
     )
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Window settings
-    # -------------------------------------------------------------------------
+    # =========================================================================
     parser.add_argument(
         "--width",
         type=int,
@@ -237,15 +255,147 @@ Controls (visualization mode):
         help="Window height in pixels (default: 800)",
     )
 
+    # =========================================================================
+    # Trajectory Provider (SPICE Support)
+    # =========================================================================
+    parser.add_argument(
+        "--trajectory-provider",
+        type=str,
+        choices=["keplerian", "spice"],
+        default="keplerian",
+        help="Trajectory computation method: 'keplerian' (default, analytical) "
+             "or 'spice' (NASA SPICE ephemeris)",
+    )
+    parser.add_argument(
+        "--spice-config",
+        type=Path,
+        default=None,
+        help="Path to SPICE constellation configuration JSON file",
+    )
+    parser.add_argument(
+        "--spice-kernels-dir",
+        type=Path,
+        default=None,
+        help="Directory containing SPICE kernel files",
+    )
+    parser.add_argument(
+        "--spice-bsp",
+        type=Path,
+        default=None,
+        help="Path to spacecraft ephemeris kernel (.bsp file)",
+    )
+    parser.add_argument(
+        "--spice-tls",
+        type=Path,
+        default=None,
+        help="Path to leapseconds kernel (.tls file)",
+    )
+    parser.add_argument(
+        "--spice-planetary-bsp",
+        type=Path,
+        default=None,
+        help="Path to planetary ephemeris kernel (.bsp file, optional)",
+    )
+
+    # =========================================================================
+    # Network Backend (NS-3 Support)
+    # =========================================================================
+    parser.add_argument(
+        "--network-backend",
+        type=str,
+        choices=["native", "delayed", "ns3"],
+        default="native",
+        help="Network simulation backend: 'native' (instant delivery, default), "
+             "'delayed' (propagation delay), or 'ns3' (high-fidelity NS-3)",
+    )
+    parser.add_argument(
+        "--ns3-mode",
+        type=str,
+        choices=["file", "socket", "bindings", "mock"],
+        default="file",
+        help="NS-3 communication mode: 'file' (batch via JSON), "
+             "'socket' (real-time TCP), 'bindings' (Python API), "
+             "'mock' (testing without NS-3) (default: file)",
+    )
+    parser.add_argument(
+        "--ns3-path",
+        type=Path,
+        default=None,
+        help="Path to NS-3 installation directory (default: /usr/local/ns3)",
+    )
+    parser.add_argument(
+        "--ns3-host",
+        type=str,
+        default="localhost",
+        help="NS-3 server hostname for socket mode (default: localhost)",
+    )
+    parser.add_argument(
+        "--ns3-port",
+        type=int,
+        default=5555,
+        help="NS-3 server port for socket mode (default: 5555)",
+    )
+    parser.add_argument(
+        "--ns3-data-rate",
+        type=str,
+        default="10Mbps",
+        help="NS-3 link data rate (default: 10Mbps)",
+    )
+    parser.add_argument(
+        "--ns3-propagation-model",
+        type=str,
+        choices=["constant_speed", "fixed", "random"],
+        default="constant_speed",
+        help="NS-3 propagation delay model (default: constant_speed)",
+    )
+    parser.add_argument(
+        "--ns3-error-model",
+        type=str,
+        choices=["none", "rate", "burst", "gilbert_elliot"],
+        default="none",
+        help="NS-3 error model (default: none)",
+    )
+    parser.add_argument(
+        "--ns3-error-rate",
+        type=float,
+        default=0.0,
+        help="NS-3 error rate for rate-based error model (default: 0.0)",
+    )
+
+    # =========================================================================
+    # SPK Export
+    # =========================================================================
+    parser.add_argument(
+        "--export-spk",
+        type=Path,
+        default=None,
+        help="Export constellation to SPICE SPK format in specified directory",
+    )
+    parser.add_argument(
+        "--export-spk-duration",
+        type=float,
+        default=24.0,
+        help="SPK export duration in hours (default: 24)",
+    )
+    parser.add_argument(
+        "--export-spk-step",
+        type=float,
+        default=60.0,
+        help="SPK export time step in seconds (default: 60)",
+    )
+
     args = parser.parse_args()
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Import simulation components
-    # -------------------------------------------------------------------------
+    # =========================================================================
     from simulation import (
         Simulation,
         SimulationConfig,
         ConstellationType,
+        is_spice_available,
+        SPICE_AVAILABLE,
+        is_ns3_available,
     )
     from agents import get_agent_class
 
@@ -261,20 +411,155 @@ Controls (visualization mode):
     # Determine if logging is enabled
     enable_logging = args.log_loc is not None
 
-    # -------------------------------------------------------------------------
-    # Create simulation configuration
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # Validate SPICE arguments
+    # =========================================================================
+    trajectory_provider = None
+    spice_data = None
+    
+    if args.trajectory_provider == "spice":
+        if not SPICE_AVAILABLE:
+            print("\nError: SPICE provider requested but SpiceyPy is not installed.")
+            print("Install with: pip install spiceypy")
+            print("Or use --trajectory-provider keplerian (default)")
+            sys.exit(1)
+
+        from simulation import (
+            SpiceDatasetLoader,
+            load_spice_for_simulation,
+        )
+
+        # Check for configuration sources
+        if args.spice_config:
+            # Load from configuration file
+            if not args.spice_config.exists():
+                print(f"\nError: SPICE config file not found: {args.spice_config}")
+                sys.exit(1)
+            print(f"\nLoading SPICE configuration from: {args.spice_config}")
+            trajectory_provider = SpiceDatasetLoader.from_config_file(
+                args.spice_config,
+                kernels_dir=args.spice_kernels_dir,
+            )
+            # For config file, we don't have spice_data - provider handles it
+        elif args.spice_bsp and args.spice_tls:
+            # Load from individual kernel files using the new module
+            if not args.spice_bsp.exists():
+                print(f"\nError: SPICE BSP file not found: {args.spice_bsp}")
+                sys.exit(1)
+            if not args.spice_tls.exists():
+                print(f"\nError: SPICE TLS file not found: {args.spice_tls}")
+                sys.exit(1)
+
+            try:
+                spice_data = load_spice_for_simulation(
+                    spk_path=args.spice_bsp,
+                    leapseconds_path=args.spice_tls,
+                    planetary_path=args.spice_planetary_bsp,
+                    verbose=True,
+                )
+                trajectory_provider = spice_data['provider']
+            except Exception as e:
+                print(f"\nError loading SPICE data: {e}")
+                sys.exit(1)
+        else:
+            print("\nError: SPICE provider requires either:")
+            print("  --spice-config <config.json>")
+            print("  OR both --spice-bsp <file.bsp> and --spice-tls <file.tls>")
+            sys.exit(1)
+
+    # =========================================================================
+    # Configure Network Backend
+    # =========================================================================
+    network_backend = None
+    if args.network_backend == "ns3":
+        from simulation import (
+            NS3Backend,
+            NS3Config,
+            NS3Mode,
+            NS3ErrorModel,
+            NS3PropagationModel,
+            check_ns3_bindings,
+            create_ns3_backend,
+        )
+
+        # Map string arguments to enums
+        propagation_map = {
+            "constant_speed": NS3PropagationModel.CONSTANT_SPEED,
+            "fixed": NS3PropagationModel.FIXED,
+            "random": NS3PropagationModel.RANDOM,
+        }
+        error_map = {
+            "none": NS3ErrorModel.NONE,
+            "rate": NS3ErrorModel.RATE,
+            "burst": NS3ErrorModel.BURST,
+            "gilbert_elliot": NS3ErrorModel.GILBERT_ELLIOT,
+        }
+
+        ns3_config = NS3Config(
+            data_rate=args.ns3_data_rate,
+            propagation_model=propagation_map[args.ns3_propagation_model],
+            error_model=error_map[args.ns3_error_model],
+            error_rate=args.ns3_error_rate,
+        )
+
+        # Check for bindings mode availability
+        if args.ns3_mode == "bindings" and not check_ns3_bindings():
+            print("\nWarning: NS-3 Python bindings not available.")
+            print("Falling back to file mode. To enable bindings:")
+            print("  cd /path/to/ns3")
+            print("  ./ns3 configure --enable-python-bindings")
+            print("  ./ns3 build")
+            args.ns3_mode = "file"
+
+        print(f"\nConfiguring NS-3 backend:")
+        print(f"  Mode: {args.ns3_mode}")
+        print(f"  Data rate: {args.ns3_data_rate}")
+        print(f"  Propagation model: {args.ns3_propagation_model}")
+        print(f"  Error model: {args.ns3_error_model}")
+
+        if args.ns3_mode == "socket":
+            print(f"  Host: {args.ns3_host}")
+            print(f"  Port: {args.ns3_port}")
+
+        network_backend = create_ns3_backend(
+            mode=args.ns3_mode,
+            ns3_path=args.ns3_path,
+            config=ns3_config,
+            host=args.ns3_host,
+            port=args.ns3_port,
+        )
+
+    elif args.network_backend == "delayed":
+        from simulation import create_delayed_backend
+        network_backend = create_delayed_backend()
+        print("\nUsing delayed network backend (with propagation delay)")
+
+    # =========================================================================
+    # Build simulation configuration
+    # =========================================================================
+    # Handle SPICE constellation type
+    use_spice_constellation = (args.type == "spice" and spice_data is not None)
+    
+    if use_spice_constellation:
+        # For SPICE type, we'll use satellites from the loaded SPICE data
+        constellation_type = ConstellationType.WALKER_DELTA
+        num_spice_sats = len(spice_data['satellites'])
+        args.planes = 1
+        args.sats_per_plane = num_spice_sats
+    else:
+        constellation_type = type_map.get(args.type, ConstellationType.WALKER_DELTA)
+
     config = SimulationConfig(
-        constellation_type=type_map[args.type],
+        constellation_type=constellation_type,
         num_planes=args.planes,
         sats_per_plane=args.sats_per_plane,
+        phasing_parameter=args.phasing,
         num_satellites=args.num,
         altitude=args.altitude,
         inclination=math.radians(args.inclination),
-        phasing_parameter=args.phasing,
-        random_seed=args.seed,
-        communication_range=args.comm_range,
         num_packets=args.num_packets,
+        communication_range=args.comm_range,
+        random_seed=args.seed,
         base_station_latitude=args.bs_latitude,
         base_station_longitude=args.bs_longitude,
         base_station_altitude=args.bs_altitude,
@@ -282,37 +567,66 @@ Controls (visualization mode):
         agent_class=agent_class,
     )
 
-    # -------------------------------------------------------------------------
-    # Create and initialize simulation
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # Create simulation
+    # =========================================================================
     sim = Simulation(config, enable_logging=enable_logging)
-    sim.initialize(timestep=args.timestep)
-
-    # -------------------------------------------------------------------------
-    # Print configuration summary
-    # -------------------------------------------------------------------------
-    print("=" * 60)
-    print("SatUpdate - Satellite Constellation Simulator")
-    print("=" * 60)
-    print(f"\nConstellation Type: {args.type}")
-    print(f"Total Satellites: {sim.num_satellites}")
-    print(f"Orbital Planes: {sim.num_orbits}")
-    print(f"Altitude: {args.altitude} km")
-    print(f"Inclination: {args.inclination}°")
-
-    if args.type != "random":
-        print(f"Phasing Parameter: {args.phasing}")
-
-    if sim.satellites:
-        period = sim.satellites[0].orbit.period
-        print(f"Orbital Period: {period/60:.1f} min")
-
-    print(f"\nPackets in Update: {args.num_packets}")
-    print(f"Agent Controller: {args.agent_controller} ({agent_class.description})")
-    if args.comm_range is not None:
-        print(f"Inter-satellite Range: {args.comm_range} km")
+    
+    if use_spice_constellation:
+        # Use the satellites and orbits from the SPICE data
+        sim.set_custom_constellation(
+            spice_data['orbits'],
+            spice_data['satellites']
+        )
+        print(f"\nUsing {len(spice_data['satellites'])} satellites from SPICE ephemeris")
     else:
-        print("Inter-satellite Range: Unlimited")
+        sim.initialize()
+
+    # =========================================================================
+    # Print configuration summary
+    # =========================================================================
+    print(f"\n{'=' * 60}")
+    print("Satellite Constellation Simulator")
+    print(f"{'=' * 60}")
+
+    if use_spice_constellation:
+        print(f"\nConstellation: SPICE-defined")
+        print(f"  Source: {args.spice_config or args.spice_bsp}")
+        print(f"  Satellites: {len(sim.satellites)}")
+        for sat in sim.satellites[:5]:
+            pos = sat.get_geospatial_position()
+            print(f"    {sat.satellite_id}: alt={pos.altitude:.0f} km")
+        if len(sim.satellites) > 5:
+            print(f"    ... and {len(sim.satellites) - 5} more")
+    elif args.type == "random":
+        print(f"\nConstellation: Random ({args.num} satellites)")
+    else:
+        print(f"\nConstellation: {args.type.replace('_', ' ').title()}")
+        print(f"  Orbital planes: {args.planes}")
+        print(f"  Sats per plane: {args.sats_per_plane}")
+        print(f"  Total satellites: {args.planes * args.sats_per_plane}")
+        print(f"  Phasing (F): {args.phasing}")
+
+    if not use_spice_constellation:
+        print(f"\nOrbital Parameters:")
+        print(f"  Altitude: {args.altitude} km")
+        print(f"  Inclination: {args.inclination}°")
+
+    print(f"\nTrajectory Provider: {args.trajectory_provider}")
+    if args.trajectory_provider == "spice":
+        print(f"  SPICE kernels loaded successfully")
+
+    print(f"\nNetwork Backend: {args.network_backend}")
+    if args.network_backend == "ns3":
+        print(f"  NS-3 mode: {args.ns3_mode}")
+
+    print(f"\nUpdate Distribution:")
+    print(f"  Packets: {args.num_packets}")
+    print(f"  Agent: {args.agent_controller}")
+    if args.comm_range:
+        print(f"  Inter-sat comm range: {args.comm_range} km")
+    else:
+        print(f"  Inter-sat comm range: unlimited")
 
     print(f"\nBase Station:")
     print(f"  Location: ({args.bs_latitude}°, {args.bs_longitude}°)")
@@ -324,9 +638,43 @@ Controls (visualization mode):
     else:
         print(f"\nLogging: Disabled")
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # Handle SPK Export
+    # =========================================================================
+    if args.export_spk:
+        try:
+            from tools import SPKGenerator, create_spk_from_simulation
+        except ImportError:
+            print("\nError: SPK export tools not available.")
+            print("Ensure the tools package is properly installed.")
+            sys.exit(1)
+
+        print(f"\n{'=' * 60}")
+        print(f"Exporting constellation to SPK format...")
+        print(f"{'=' * 60}")
+        print(f"  Output directory: {args.export_spk}")
+        print(f"  Duration: {args.export_spk_duration} hours")
+        print(f"  Time step: {args.export_spk_step} seconds")
+
+        output_path = create_spk_from_simulation(
+            sim,
+            args.export_spk,
+            duration_hours=args.export_spk_duration,
+            step_seconds=args.export_spk_step,
+        )
+
+        print(f"\nSPK export complete!")
+        print(f"  Output: {output_path}")
+        print(f"\nTo create binary SPK file, run:")
+        print(f"  mkspk -setup {output_path}/mkspk_setup.txt -input {output_path}/ephemeris_data.txt -output constellation.bsp")
+
+        # If only exporting, exit here
+        if args.headless and args.duration == 0:
+            return
+
+    # =========================================================================
     # Run simulation
-    # -------------------------------------------------------------------------
+    # =========================================================================
     if args.headless:
         print(f"\n{'=' * 60}")
         print(f"Running headless simulation for up to {args.duration:.0f} seconds...")
@@ -402,6 +750,17 @@ Controls (visualization mode):
                 f"({visible/total*100:.1f}%)"
             )
 
+        # Network backend statistics
+        if network_backend:
+            net_stats = network_backend.get_statistics()
+            print(f"\nNetwork Statistics:")
+            print(f"  Packets sent: {net_stats.packets_sent}")
+            print(f"  Packets received: {net_stats.packets_received}")
+            print(f"  Packets dropped: {net_stats.packets_dropped}")
+            if net_stats.average_latency_ms > 0:
+                print(f"  Average latency: {net_stats.average_latency_ms:.2f} ms")
+            network_backend.shutdown()
+
         # Save log if enabled
         if enable_logging:
             sim.save_log(args.log_loc)
@@ -436,11 +795,15 @@ Controls (visualization mode):
             height=args.height,
             time_scale=args.time_scale,
             paused=args.paused,
-            log_location=args.log_loc,  # Pass log location to visualizer
+            log_location=args.log_loc,
         )
 
         visualizer.set_simulation(sim)
         visualizer.run()
+
+        # Cleanup network backend if used
+        if network_backend:
+            network_backend.shutdown()
 
 
 if __name__ == "__main__":

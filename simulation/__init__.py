@@ -75,6 +75,18 @@ from .spice_provider import (
     SPICE_AVAILABLE,
 )
 
+# SPICE Constellation utilities
+from .spice_constellation import (
+    SPKBodyInfo,
+    OrbitalElements,
+    discover_spk_bodies,
+    create_naif_mapping,
+    state_vector_to_elements,
+    create_satellite_from_spice,
+    create_constellation_from_spice,
+    load_spice_for_simulation,
+)
+
 # Step 4: Network Backend Interface
 from .network_backend import (
     NetworkBackend,
@@ -165,6 +177,16 @@ __all__ = [
     "create_spice_provider",
     "is_spice_available",
     "SPICE_AVAILABLE",
+    
+    # SPICE Constellation
+    "SPKBodyInfo",
+    "OrbitalElements",
+    "discover_spk_bodies",
+    "create_naif_mapping",
+    "state_vector_to_elements",
+    "create_satellite_from_spice",
+    "create_constellation_from_spice",
+    "load_spice_for_simulation",
     
     # Network Backend (Step 4)
     "NetworkBackend",
