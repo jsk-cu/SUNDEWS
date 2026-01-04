@@ -24,6 +24,7 @@ import numpy as np
 
 class DropReason(Enum):
     """Reasons for packet drops."""
+    NONE = "none"
     NO_ROUTE = "no_route"
     LINK_DOWN = "link_down"
     QUEUE_FULL = "queue_full"
@@ -49,10 +50,10 @@ class PacketTransfer:
         Simulation time when transfer completed
     success : bool
         Whether transfer succeeded
-    latency_ms : float
-        Transfer latency in milliseconds
+    latency_ms : float, optional
+        Transfer latency in milliseconds (None if not measured)
     size_bytes : int
-        Packet size in bytes
+        Packet size in bytes (default 1024)
     drop_reason : DropReason, optional
         Reason for drop if not successful
     metadata : Dict, optional
@@ -63,22 +64,42 @@ class PacketTransfer:
     packet_id: int
     timestamp: float
     success: bool
-    latency_ms: float = 0.0
-    size_bytes: int = 0
+    latency_ms: Optional[float] = None
+    size_bytes: int = 1024
     drop_reason: Optional[DropReason] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """Set default drop reason based on success status."""
+        if not self.success and self.drop_reason is None:
+            self.drop_reason = DropReason.NO_ROUTE
+        if self.success and self.drop_reason is None:
+            self.drop_reason = DropReason.NONE
+    
+    @property
+    def dropped_reason(self) -> DropReason:
+        """Alias for drop_reason for backward compatibility."""
+        return self.drop_reason if self.drop_reason else DropReason.NONE
+    
+    @dropped_reason.setter
+    def dropped_reason(self, value: DropReason):
+        """Set drop_reason via alias."""
+        self.drop_reason = value
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
-            "source": self.source_id,
-            "destination": self.destination_id,
+            "source_id": self.source_id,
+            "destination_id": self.destination_id,
+            "source": self.source_id,  # Backward compatibility
+            "destination": self.destination_id,  # Backward compatibility
             "packet_id": self.packet_id,
             "timestamp": self.timestamp,
             "success": self.success,
             "latency_ms": self.latency_ms,
             "size_bytes": self.size_bytes,
             "drop_reason": self.drop_reason.value if self.drop_reason else None,
+            "dropped_reason": self.drop_reason.value if self.drop_reason else None,
             "metadata": self.metadata,
         }
     
@@ -94,39 +115,68 @@ class PacketTransfer:
                 drop_reason = DropReason.ERROR
         
         return cls(
-            source_id=data.get("source", data.get("source_id", "")),
-            destination_id=data.get("destination", data.get("destination_id", "")),
+            source_id=data.get("source_id", data.get("source", "")),
+            destination_id=data.get("destination_id", data.get("destination", "")),
             packet_id=data.get("packet_id", 0),
             timestamp=data.get("timestamp", 0.0),
             success=data.get("success", True),
-            latency_ms=data.get("latency_ms", 0.0),
-            size_bytes=data.get("size_bytes", data.get("size", 0)),
+            latency_ms=data.get("latency_ms"),
+            size_bytes=data.get("size_bytes", data.get("size", 1024)),
             drop_reason=drop_reason,
             metadata=data.get("metadata", {}),
         )
 
 
-@dataclass
 class NetworkStatistics:
     """
     Network performance statistics.
     
     Tracks packets sent, received, dropped, and latency metrics.
+    
+    Accepts both `avg_latency_ms` and `average_latency_ms` as parameters
+    for backward compatibility.
     """
-    total_packets_sent: int = 0
-    total_packets_received: int = 0
-    total_packets_dropped: int = 0
-    total_bytes_sent: int = 0
-    total_bytes_received: int = 0
     
-    # Latency tracking
-    min_latency_ms: float = float('inf')
-    max_latency_ms: float = 0.0
-    avg_latency_ms: float = 0.0
+    def __init__(
+        self,
+        total_packets_sent: int = 0,
+        total_packets_received: int = 0,
+        total_packets_dropped: int = 0,
+        total_bytes_sent: int = 0,
+        total_bytes_received: int = 0,
+        min_latency_ms: float = float('inf'),
+        max_latency_ms: float = 0.0,
+        avg_latency_ms: float = 0.0,
+        average_latency_ms: Optional[float] = None,  # Alias parameter
+        _latency_sum: float = 0.0,
+        _latency_count: int = 0,
+    ):
+        self.total_packets_sent = total_packets_sent
+        self.total_packets_received = total_packets_received
+        self.total_packets_dropped = total_packets_dropped
+        self.total_bytes_sent = total_bytes_sent
+        self.total_bytes_received = total_bytes_received
+        self.min_latency_ms = min_latency_ms
+        self.max_latency_ms = max_latency_ms
+        
+        # Handle alias: average_latency_ms takes precedence if provided
+        if average_latency_ms is not None:
+            self.avg_latency_ms = average_latency_ms
+        else:
+            self.avg_latency_ms = avg_latency_ms
+        
+        self._latency_sum = _latency_sum
+        self._latency_count = _latency_count
     
-    # Internal tracking
-    _latency_sum: float = field(default=0.0, repr=False)
-    _latency_count: int = field(default=0, repr=False)
+    @property
+    def average_latency_ms(self) -> float:
+        """Alias for avg_latency_ms for backward compatibility."""
+        return self.avg_latency_ms
+    
+    @average_latency_ms.setter
+    def average_latency_ms(self, value: float):
+        """Set avg_latency_ms via alias."""
+        self.avg_latency_ms = value
     
     def record_send(self, size_bytes: int) -> None:
         """Record a packet send."""
@@ -187,6 +237,7 @@ class NetworkStatistics:
             "min_latency_ms": self.min_latency_ms if self.min_latency_ms != float('inf') else 0,
             "max_latency_ms": self.max_latency_ms,
             "avg_latency_ms": self.avg_latency_ms,
+            "average_latency_ms": self.avg_latency_ms,  # Alias
             "delivery_ratio": self.delivery_ratio,
             "drop_ratio": self.drop_ratio,
         }
@@ -339,6 +390,11 @@ class NativeNetworkBackend(NetworkBackend):
         self._allow_unlinked = allow_unlinked
         self._initialized = False
     
+    @property
+    def active_links(self) -> Set[Tuple[str, str]]:
+        """Get the set of active links."""
+        return self._active_links
+    
     def initialize(self, topology: Dict[str, Any]) -> None:
         """Initialize with topology."""
         links = topology.get("links", [])
@@ -396,6 +452,7 @@ class NativeNetworkBackend(NetworkBackend):
                     success=True,
                     latency_ms=0.0,
                     size_bytes=pending.size_bytes,
+                    drop_reason=DropReason.NONE,
                     metadata=pending.metadata,
                 )
                 self._statistics.record_receive(pending.size_bytes, 0.0)
@@ -425,6 +482,7 @@ class NativeNetworkBackend(NetworkBackend):
     def reset(self) -> None:
         """Reset state."""
         self._pending_transfers.clear()
+        self._active_links.clear()
         self._statistics.reset()
         self._current_time = 0.0
     
@@ -441,13 +499,24 @@ class DelayedNetworkBackend(NetworkBackend):
     """
     Network backend with propagation delay simulation.
     
-    Simulates realistic latency based on distance between nodes.
+    Simulates realistic latency based on distance between nodes
+    or a fixed processing delay.
+    
+    Parameters
+    ----------
+    propagation_speed : float
+        Speed of signal propagation in m/s (default: speed of light)
+    fixed_delay_ms : float
+        Fixed delay added to all transfers in milliseconds
+    processing_delay_ms : float
+        Alias for fixed_delay_ms for backward compatibility
     """
     
     def __init__(
         self,
         propagation_speed: float = 299792458.0,  # Speed of light m/s
         fixed_delay_ms: float = 0.0,
+        processing_delay_ms: Optional[float] = None,
     ):
         self._active_links: Set[Tuple[str, str]] = set()
         self._node_positions: Dict[str, np.ndarray] = {}
@@ -455,8 +524,14 @@ class DelayedNetworkBackend(NetworkBackend):
         self._statistics = NetworkStatistics()
         self._current_time: float = 0.0
         self._propagation_speed = propagation_speed
-        self._fixed_delay_ms = fixed_delay_ms
+        # processing_delay_ms is an alias for fixed_delay_ms
+        self._fixed_delay_ms = processing_delay_ms if processing_delay_ms is not None else fixed_delay_ms
         self._initialized = False
+    
+    @property
+    def active_links(self) -> Set[Tuple[str, str]]:
+        """Get the set of active links."""
+        return self._active_links
     
     def initialize(self, topology: Dict[str, Any]) -> None:
         """Initialize with topology."""
@@ -481,6 +556,19 @@ class DelayedNetworkBackend(NetworkBackend):
         """Update active links."""
         self._active_links = active_links
     
+    def set_positions(self, positions: Dict[str, np.ndarray]) -> None:
+        """
+        Set node positions for distance-based latency calculation.
+        
+        Parameters
+        ----------
+        positions : Dict[str, np.ndarray]
+            Dictionary mapping node IDs to position vectors (in km)
+        """
+        for node_id, pos in positions.items():
+            # Convert km to meters for propagation calculation
+            self._node_positions[node_id] = np.array(pos, dtype=float) * 1000.0
+    
     def _has_link(self, node1: str, node2: str) -> bool:
         """Check if link exists."""
         return (node1, node2) in self._active_links or \
@@ -488,15 +576,18 @@ class DelayedNetworkBackend(NetworkBackend):
     
     def _calculate_latency(self, source: str, destination: str) -> float:
         """Calculate propagation latency in milliseconds."""
-        if self._fixed_delay_ms > 0:
-            return self._fixed_delay_ms
+        latency = self._fixed_delay_ms
         
-        src_pos = self._node_positions.get(source, np.zeros(3))
-        dst_pos = self._node_positions.get(destination, np.zeros(3))
+        # Add distance-based delay if positions are known
+        src_pos = self._node_positions.get(source)
+        dst_pos = self._node_positions.get(destination)
         
-        distance_m = np.linalg.norm(dst_pos - src_pos)
-        delay_s = distance_m / self._propagation_speed
-        return delay_s * 1000.0
+        if src_pos is not None and dst_pos is not None:
+            distance_m = np.linalg.norm(dst_pos - src_pos)
+            delay_s = distance_m / self._propagation_speed
+            latency += delay_s * 1000.0
+        
+        return latency
     
     def send_packet(
         self,
@@ -542,6 +633,7 @@ class DelayedNetworkBackend(NetworkBackend):
                         success=True,
                         latency_ms=latency_ms,
                         size_bytes=pending.size_bytes,
+                        drop_reason=DropReason.NONE,
                         metadata=pending.metadata,
                     )
                     self._statistics.record_receive(pending.size_bytes, latency_ms)
@@ -554,7 +646,7 @@ class DelayedNetworkBackend(NetworkBackend):
                         success=False,
                         latency_ms=latency_ms,
                         size_bytes=pending.size_bytes,
-                        drop_reason=DropReason.NO_ROUTE,
+                        drop_reason=DropReason.LINK_DOWN,
                         metadata=pending.metadata,
                     )
                     self._statistics.record_drop()

@@ -634,28 +634,36 @@ class TestNS3Modes:
         assert NS3Mode.BINDINGS.value == "bindings"
         assert NS3Mode.MOCK.value == "mock"
     
-    def test_socket_mode_not_implemented(self, temp_work_dir):
-        """Test socket mode raises NotImplementedError."""
-        from simulation import NS3Backend
+    def test_socket_mode_fallback(self, temp_work_dir):
+        """Test socket mode falls back gracefully when connection fails."""
+        from simulation import NS3Backend, NS3Mode
         
-        # Force socket mode
-        backend = NS3Backend(mode="mock", work_dir=temp_work_dir)
-        backend._mode = backend._mode.__class__("socket")
-        backend.initialize({"nodes": [], "links": []})
+        # Socket mode should fall back to mock when no server available
+        backend = NS3Backend(mode="socket", work_dir=temp_work_dir)
+        backend.initialize({"nodes": [], "links": [("A", "B")]})
         
-        with pytest.raises(NotImplementedError):
-            backend.step(60.0)
+        # Should work in mock mode (graceful fallback)
+        backend.send_packet("A", "B", packet_id=1)
+        transfers = backend.step(60.0)
+        
+        # Verify it works (fell back to mock mode)
+        assert backend.mode == NS3Mode.MOCK
+        assert isinstance(transfers, list)
     
-    def test_bindings_mode_not_implemented(self, temp_work_dir):
-        """Test bindings mode raises NotImplementedError."""
-        from simulation import NS3Backend
+    def test_bindings_mode_fallback(self, temp_work_dir):
+        """Test bindings mode falls back gracefully when bindings unavailable."""
+        from simulation import NS3Backend, NS3Mode
         
-        backend = NS3Backend(mode="mock", work_dir=temp_work_dir)
-        backend._mode = backend._mode.__class__("bindings")
-        backend.initialize({"nodes": [], "links": []})
+        backend = NS3Backend(mode="bindings", work_dir=temp_work_dir)
+        backend.initialize({"nodes": [], "links": [("A", "B")]})
         
-        with pytest.raises(NotImplementedError):
-            backend.step(60.0)
+        # Should work in mock mode (graceful fallback)
+        backend.send_packet("A", "B", packet_id=1)
+        transfers = backend.step(60.0)
+        
+        # Verify it works (fell back to mock mode)
+        assert backend.mode == NS3Mode.MOCK
+        assert isinstance(transfers, list)
 
 
 class TestNS3ErrorModels:
