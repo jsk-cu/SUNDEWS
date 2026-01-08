@@ -168,7 +168,9 @@ class RarityAgent(BaseAgent):
             neighbor_packets = broadcast.get("packets", set())
 
             # Find packets neighbor has that we need and haven't requested yet
-            useful = (neighbor_packets & missing) - already_requested
+            #useful = (neighbor_packets & missing) - already_requested
+            useful = list((neighbor_packets & missing) - already_requested)
+            random.shuffle(useful)
 
             if useful:
                 # Find the rarest packet (fewest holders according to our knowledge)
@@ -176,7 +178,7 @@ class RarityAgent(BaseAgent):
                 # Break ties by packet index for determinism
                 rarest_packet = min(
                     useful,
-                    key=lambda p: (packet_holder_count.get(p, 0), p)
+                    key=lambda p: packet_holder_count.get(p, 0)
                 )
                 requests[neighbor_id] = rarest_packet
                 already_requested.add(rarest_packet)

@@ -538,10 +538,13 @@ Controls (visualization mode):
     # Build simulation configuration
     # =========================================================================
     # Handle SPICE constellation type
-    use_spice_constellation = (args.type == "spice" and spice_data is not None)
+    #use_spice_constellation = (args.type == "spice" and spice_data is not None)
+    
+    use_spice_constellation = spice_data is not None and len(spice_data.get('satellites', [])) > 0
     
     if use_spice_constellation:
         # For SPICE type, we'll use satellites from the loaded SPICE data
+        args.type = "spice"
         constellation_type = ConstellationType.WALKER_DELTA
         num_spice_sats = len(spice_data['satellites'])
         args.planes = 1

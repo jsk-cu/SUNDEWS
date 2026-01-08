@@ -8,13 +8,14 @@ kernels. This module handles:
 - Discovering bodies in SPK files
 - Converting SPICE state vectors to Keplerian orbital elements
 - Creating Satellite objects from SPICE data
+- Auto-detecting valid epochs when BSP coverage doesn't include current time
 
 This enables loading real satellite ephemeris data and visualizing/simulating
 constellations defined in SPICE SPK files.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union, Any
 import logging
@@ -210,13 +211,14 @@ def discover_spk_bodies(
                     if spice.wncard(coverage) > 0:
                         start_et, end_et = spice.wnfetd(coverage, 0)
                         # Convert ET to datetime
-                        start_str = spice.et2utc(start_et, "ISOC", 3)
-                        end_str = spice.et2utc(end_et, "ISOC", 3)
+                        start_str = spice.et2utc(start_et, "ISOC", 6)
+                        end_str = spice.et2utc(end_et, "ISOC", 6)
+                        # Parse ISO format - handle both with and without timezone
                         coverage_start = datetime.fromisoformat(
-                            start_str.replace("Z", "+00:00")
+                            start_str.replace("Z", "")
                         )
                         coverage_end = datetime.fromisoformat(
-                            end_str.replace("Z", "+00:00")
+                            end_str.replace("Z", "")
                         )
                 except Exception as e:
                     logger.debug(f"Could not get coverage for {naif_id}: {e}")
@@ -370,6 +372,123 @@ def state_vector_to_elements(
     )
 
 
+def find_common_coverage_window(
+    bodies: List[SPKBodyInfo],
+) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """
+    Find the common time coverage window across all bodies.
+    
+    Parameters
+    ----------
+    bodies : List[SPKBodyInfo]
+        List of body information with coverage times
+    
+    Returns
+    -------
+    Tuple[Optional[datetime], Optional[datetime]]
+        (latest_start, earliest_end) representing the common coverage window.
+        Returns (None, None) if no common coverage can be determined.
+    """
+    # Collect all coverage times
+    coverage_starts = [b.coverage_start for b in bodies if b.coverage_start is not None]
+    coverage_ends = [b.coverage_end for b in bodies if b.coverage_end is not None]
+    
+    if not coverage_starts or not coverage_ends:
+        return None, None
+    
+    # Find intersection: latest start and earliest end
+    latest_start = max(coverage_starts)
+    earliest_end = min(coverage_ends)
+    
+    return latest_start, earliest_end
+
+
+def auto_detect_valid_epoch(
+    bodies: List[SPKBodyInfo],
+    requested_epoch: Optional[datetime] = None,
+    verbose: bool = True,
+) -> datetime:
+    """
+    Auto-detect a valid epoch within the BSP coverage window.
+    
+    If the requested epoch (or current time) is outside the coverage window,
+    this function automatically selects an epoch within the valid range.
+    
+    Parameters
+    ----------
+    bodies : List[SPKBodyInfo]
+        List of body information with coverage times
+    requested_epoch : datetime, optional
+        The originally requested epoch. If None, uses current UTC time.
+    verbose : bool
+        Whether to print warnings about epoch adjustments
+    
+    Returns
+    -------
+    datetime
+        A valid epoch within the coverage window
+    
+    Raises
+    ------
+    ValueError
+        If no common coverage window exists across the satellites
+    """
+    # Default to current UTC time if not specified
+    if requested_epoch is None:
+        epoch = datetime.utcnow()
+    else:
+        # Ensure naive datetime for comparison
+        if requested_epoch.tzinfo is not None:
+            epoch = requested_epoch.replace(tzinfo=None)
+        else:
+            epoch = requested_epoch
+    
+    # Find common coverage window
+    latest_start, earliest_end = find_common_coverage_window(bodies)
+    
+    # If we couldn't determine coverage, return the original epoch and hope for the best
+    if latest_start is None or earliest_end is None:
+        logger.warning("Could not determine BSP coverage window, using requested epoch")
+        return epoch
+    
+    # Check if there's actually a valid common window
+    if latest_start >= earliest_end:
+        raise ValueError(
+            f"No common coverage window exists across all satellites.\n"
+            f"  Latest start time: {latest_start}\n"
+            f"  Earliest end time: {earliest_end}\n"
+            f"Some satellites have non-overlapping coverage periods."
+        )
+    
+    # Check if requested epoch is within coverage
+    if latest_start <= epoch <= earliest_end:
+        # Epoch is valid, use it
+        return epoch
+    
+    # Epoch is outside coverage - need to auto-select
+    # Use the midpoint of the common coverage window
+    coverage_duration = earliest_end - latest_start
+    midpoint = latest_start + coverage_duration / 2
+    
+    # Log warning about the adjustment
+    if verbose:
+        print(f"\n{'=' * 60}")
+        print("WARNING: Requested epoch is outside BSP coverage")
+        print(f"{'=' * 60}")
+        print(f"  Requested epoch: {epoch}")
+        print(f"  BSP coverage:    {latest_start} to {earliest_end}")
+        print(f"  Coverage duration: {coverage_duration}")
+        print(f"  Using midpoint:  {midpoint}")
+        print(f"{'=' * 60}\n")
+    
+    logger.warning(
+        f"Requested epoch {epoch} is outside BSP coverage "
+        f"({latest_start} to {earliest_end}). Using midpoint: {midpoint}"
+    )
+    
+    return midpoint
+
+
 def create_satellite_from_spice(
     provider: SpiceProvider,
     satellite_id: str,
@@ -448,6 +567,8 @@ def create_constellation_from_spice(
     leapseconds_path: Union[str, Path],
     epoch: Optional[datetime] = None,
     planetary_path: Optional[Union[str, Path]] = None,
+    auto_epoch: bool = True,
+    verbose: bool = True,
 ) -> Tuple[List[Satellite], List[EllipticalOrbit], SpiceProvider]:
     """
     Create a complete satellite constellation from an SPK file.
@@ -456,6 +577,10 @@ def create_constellation_from_spice(
     It discovers all bodies in the SPK file, creates orbital elements,
     and returns Satellite objects ready for simulation.
     
+    If the requested epoch is outside the BSP coverage window and auto_epoch
+    is True, this function will automatically select a valid epoch within
+    the coverage window.
+    
     Parameters
     ----------
     spk_path : str or Path
@@ -463,9 +588,16 @@ def create_constellation_from_spice(
     leapseconds_path : str or Path
         Path to leapseconds kernel (.tls)
     epoch : datetime, optional
-        Time at which to compute orbital elements. Default: now (UTC)
+        Time at which to compute orbital elements. Default: now (UTC).
+        If outside BSP coverage and auto_epoch=True, a valid epoch will
+        be automatically selected.
     planetary_path : str or Path, optional
         Path to planetary ephemeris kernel (.bsp)
+    auto_epoch : bool, optional
+        If True (default), automatically detect a valid epoch when the
+        requested epoch is outside BSP coverage. If False, raise an error.
+    verbose : bool, optional
+        Whether to print warnings about epoch adjustments (default: True)
     
     Returns
     -------
@@ -481,7 +613,8 @@ def create_constellation_from_spice(
     FileNotFoundError
         If kernel files not found
     ValueError
-        If no valid satellites could be created
+        If no valid satellites could be created, or if epoch is outside
+        coverage and auto_epoch is False
     
     Examples
     --------
@@ -507,14 +640,7 @@ def create_constellation_from_spice(
     if not leapseconds_path.exists():
         raise FileNotFoundError(f"Leapseconds file not found: {leapseconds_path}")
     
-    # Use naive datetime to avoid timezone comparison issues in SpiceProvider
-    if epoch is None:
-        epoch = datetime.utcnow()  # Naive UTC datetime
-    elif epoch.tzinfo is not None:
-        # Convert to naive UTC
-        epoch = epoch.replace(tzinfo=None)
-    
-    # Discover bodies in the SPK file
+    # Discover bodies in the SPK file (this also gets coverage info)
     logger.info(f"Discovering bodies in {spk_path}")
     bodies = discover_spk_bodies(spk_path, leapseconds_path)
     
@@ -522,6 +648,16 @@ def create_constellation_from_spice(
         raise ValueError(f"No bodies found in SPK file: {spk_path}")
     
     logger.info(f"Found {len(bodies)} bodies: {[b.name for b in bodies]}")
+    
+    # Handle epoch - auto-detect valid epoch if needed
+    if auto_epoch:
+        epoch = auto_detect_valid_epoch(bodies, epoch, verbose=verbose)
+    else:
+        # Use naive datetime to avoid timezone comparison issues
+        if epoch is None:
+            epoch = datetime.utcnow()
+        elif epoch.tzinfo is not None:
+            epoch = epoch.replace(tzinfo=None)
     
     # Create NAIF ID mapping
     naif_mapping = create_naif_mapping(bodies)
@@ -548,6 +684,7 @@ def create_constellation_from_spice(
     # Create satellites from each body
     satellites = []
     orbits = []
+    failed_bodies = []
     
     for body in bodies:
         try:
@@ -564,11 +701,24 @@ def create_constellation_from_spice(
             
         except Exception as e:
             logger.warning(f"Could not create satellite {body.name}: {e}")
+            failed_bodies.append((body.name, str(e)))
             # Print to console as well for visibility
             print(f"Could not create satellite {body.name}: {e}")
     
     if not satellites:
-        raise ValueError("No satellites could be created from SPICE data")
+        # Provide more helpful error message
+        error_msg = "No satellites could be created from SPICE data.\n"
+        if failed_bodies:
+            error_msg += f"Failed bodies ({len(failed_bodies)}):\n"
+            for name, reason in failed_bodies[:5]:  # Show first 5
+                error_msg += f"  - {name}: {reason}\n"
+            if len(failed_bodies) > 5:
+                error_msg += f"  ... and {len(failed_bodies) - 5} more\n"
+        raise ValueError(error_msg)
+    
+    if failed_bodies and verbose:
+        print(f"\nSuccessfully created {len(satellites)} satellites "
+              f"({len(failed_bodies)} failed)")
     
     logger.info(f"Created {len(satellites)} satellites from SPICE ephemeris")
     
@@ -581,12 +731,14 @@ def load_spice_for_simulation(
     epoch: Optional[datetime] = None,
     planetary_path: Optional[Union[str, Path]] = None,
     verbose: bool = True,
+    auto_epoch: bool = True,
 ) -> Dict[str, Any]:
     """
     Load SPICE data and prepare it for use with the Simulation class.
     
     This is a convenience wrapper that returns all necessary components
-    for integrating SPICE data with the simulation.
+    for integrating SPICE data with the simulation. It automatically
+    detects a valid epoch if the requested epoch is outside BSP coverage.
     
     Parameters
     ----------
@@ -595,11 +747,15 @@ def load_spice_for_simulation(
     leapseconds_path : str or Path
         Path to leapseconds kernel (.tls)
     epoch : datetime, optional
-        Time at which to compute orbital elements
+        Time at which to compute orbital elements. If outside BSP coverage
+        and auto_epoch=True, a valid epoch will be automatically selected.
     planetary_path : str or Path, optional
         Path to planetary ephemeris kernel (.bsp)
     verbose : bool
         Whether to print progress information
+    auto_epoch : bool
+        If True (default), automatically detect a valid epoch when the
+        requested epoch is outside BSP coverage.
     
     Returns
     -------
@@ -610,7 +766,8 @@ def load_spice_for_simulation(
         - 'provider': SpiceProvider
         - 'bodies': List[SPKBodyInfo]
         - 'naif_mapping': Dict[str, int]
-        - 'epoch': datetime
+        - 'epoch': datetime (the epoch actually used, may differ from requested)
+        - 'epoch_auto_adjusted': bool (True if epoch was auto-adjusted)
     
     Examples
     --------
@@ -619,11 +776,12 @@ def load_spice_for_simulation(
     ...     spice_data['orbits'],
     ...     spice_data['satellites']
     ... )
+    >>> print(f"Using epoch: {spice_data['epoch']}")
     """
     if verbose:
         print(f"\nLoading SPICE data from: {spk_path}")
     
-    # Discover bodies first
+    # Discover bodies first (to report and for epoch detection)
     bodies = discover_spk_bodies(spk_path, leapseconds_path)
     naif_mapping = create_naif_mapping(bodies)
     
@@ -631,26 +789,52 @@ def load_spice_for_simulation(
         print(f"  Found {len(bodies)} bodies:")
         for body in bodies:
             print(f"    {body.name}: NAIF ID {body.naif_id}")
+        
+        # Show coverage info
+        latest_start, earliest_end = find_common_coverage_window(bodies)
+        if latest_start and earliest_end:
+            print(f"\n  Common coverage window:")
+            print(f"    Start: {latest_start}")
+            print(f"    End:   {earliest_end}")
+            print(f"    Duration: {earliest_end - latest_start}")
     
-    # Use naive datetime to avoid timezone issues
-    if epoch is None:
-        epoch = datetime.utcnow()
-    elif epoch.tzinfo is not None:
-        epoch = epoch.replace(tzinfo=None)
+    # Track if we're going to auto-adjust the epoch
+    original_epoch = epoch
+    if original_epoch is None:
+        original_epoch = datetime.utcnow()
+    elif original_epoch.tzinfo is not None:
+        original_epoch = original_epoch.replace(tzinfo=None)
     
-    # Create constellation
+    # Create constellation (this will auto-detect epoch if needed)
     satellites, orbits, provider = create_constellation_from_spice(
         spk_path,
         leapseconds_path,
         epoch=epoch,
         planetary_path=planetary_path,
+        auto_epoch=auto_epoch,
+        verbose=verbose,
     )
+    
+    # Determine the actual epoch that was used
+    # We need to recalculate since create_constellation_from_spice doesn't return it
+    if auto_epoch:
+        actual_epoch = auto_detect_valid_epoch(bodies, epoch, verbose=False)
+    else:
+        actual_epoch = original_epoch
+    
+    epoch_auto_adjusted = (actual_epoch != original_epoch)
     
     if verbose:
         print(f"\nCreated {len(satellites)} satellites:")
-        for sat in satellites:
+        for sat in satellites[:10]:  # Show first 10
             pos = sat.get_geospatial_position()
             print(f"    {sat.satellite_id}: alt={pos.altitude:.0f} km")
+        if len(satellites) > 10:
+            print(f"    ... and {len(satellites) - 10} more")
+        
+        print(f"\n  Epoch used: {actual_epoch}")
+        if epoch_auto_adjusted:
+            print(f"  (Auto-adjusted from: {original_epoch})")
     
     return {
         'satellites': satellites,
@@ -658,5 +842,6 @@ def load_spice_for_simulation(
         'provider': provider,
         'bodies': bodies,
         'naif_mapping': naif_mapping,
-        'epoch': epoch,
+        'epoch': actual_epoch,
+        'epoch_auto_adjusted': epoch_auto_adjusted,
     }
